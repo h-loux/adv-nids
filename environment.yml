@@ -1,0 +1,21 @@
+name: adv-nids
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scikit-learn
+  - xgboost
+  - matplotlib
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - requests
+  - pyyaml
+  - joblib
+  - streamlit>=1.30
+  - pip:
+      - types-PyYAML

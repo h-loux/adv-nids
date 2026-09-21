@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "adv-nids"
+version = "0.1.0"
+description = "Adversarial NIDS: gradient-based evasion attacks against network intrusion detection models"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ribhav Devprasad", email = "ribhavdevprasad@gmail.com" }]
+dependencies = [
+    "numpy>=1.24,<2",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+    "matplotlib>=3.7",
+    "torch>=2.0",
+    "streamlit>=1.30",
+    "joblib>=1.3",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-timeout>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nids*", "dashboard*"]
