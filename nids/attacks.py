@@ -9,7 +9,7 @@ then validity.py to check the result.
 from __future__ import annotations
 import numpy as np
 
-from nids.constants import EPS_GRID
+from nids.constants import EPS_GRID, ATTACK
 
 
 def fgsm_attack(model, x_clean: np.ndarray, y_target: int, eps: float,
@@ -90,12 +90,13 @@ ATTACKS = {
 
 
 def attack(model, x_clean, attack_name: str, eps: float, mask=None, **kwargs):
-    """Dispatch to the right attack function."""
+    """Dispatch to the right attack function.
+
+    Calls fgsm_attack or pgd_attack with y_target=ATTACK (evasion: make attack look benign).
+    """
     if attack_name not in ATTACKS:
         raise ValueError(f"Unknown attack: {attack_name}. Use one of {list(ATTACKS)}")
-    return ATTACKS[attack_name](model, x_clean, attack_name=attack_name, eps=eps,
-                                mask=mask, **kwargs) if False else \
-           ATTACKS[attack_name](model, x_clean, y_target=ATTACK, eps=eps, mask=mask, **kwargs)
+    return ATTACKS[attack_name](model, x_clean, y_target=ATTACK, eps=eps, mask=mask, **kwargs)
 
 
 def project(x_adv: np.ndarray, x_clean: np.ndarray, eps: float,

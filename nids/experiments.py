@@ -16,18 +16,19 @@ import numpy as np
 
 from nids.constants import (
     ARTIFACTS_DIR, CHECKPOINTS_DIR, EPS_GRID, FIGURES_DIR,
-    LABEL_NAMES, RESULTS_DIR, SUPPORTED_DATASETS, SUPPORTED_MODELS, ATTACK, BENIGN,
+    LABEL_NAMES, PROCESSED_DIR, RESULTS_DIR, SUPPORTED_DATASETS, SUPPORTED_MODELS, ATTACK, BENIGN,
 )
 from nids.attacks import attack, project
-from nids.data import get_meta, load_dataset
+from nids.data import get_meta, get_test_arrays, load_dataset
 from nids.models import load_model, make_model, save_registry
 from nids.validity import check_validity, check_behaviour_preserved, perturbation_magnitude
 
 
 def ensure_data(dataset: str):
-    """Precondition: dataset must be built."""
-    meta_path = load_dataset(dataset)
-    return get_meta(dataset)
+    """Precondition: dataset must be built. Skips download if already processed."""
+    if (PROCESSED_DIR / f"{dataset}_full.npz").exists():
+        return get_meta(dataset)
+    return load_dataset(dataset)
 
 
 # ---------------------------------------------------------------------------
@@ -41,11 +42,8 @@ def run_e1(dataset: str, model_names=None, random_state: int = 42):
     n_features = meta["n_features"]
     mutable_mask = np.array(meta["mutable_mask"], dtype=bool)
 
-    # Load pre-split data
-    from nids.data import get_test_arrays
-    test_arr = get_test_arrays(dataset)
-    # We need the full split for training — reload full
-    full = np.load(Path("data/processed") / f"{dataset}_full.npz")
+    # Load data
+    full = np.load(PROCESSED_DIR / f"{dataset}_full.npz")
     # Reconstruct train/test split by index (same seed as data build)
     rng = np.random.RandomState(random_state)
     n_total = len(full["y"])
@@ -233,7 +231,7 @@ def run_e8(dataset: str, model_names=("mlp", "cnn1d"), eps: float = 0.1,
     meta = get_meta(dataset)
     mutable_mask = np.array(meta["mutable_mask"], dtype=bool)
 
-    full = np.load(Path("data/processed") / f"{dataset}_full.npz")
+    full = np.load(PROCESSED_DIR / f"{dataset}_full.npz")
     rng = np.random.RandomState(random_state)
     n_total = len(full["y"])
     n_test = min(5000, n_total // 5)
@@ -336,7 +334,7 @@ def _eval_attack_pgd(vm, X, y, eps, mask, bounds, n_samples=1000):
     asr = float((preds == BENIGN).mean())
     avg_delta = float(np.mean(np.max(np.abs(x_adv - x_targets), axis=1)))
     # validity rate
-    valid_count = sum(1 for a, c in zip(x_adv, x_targets) if check_validity(a, c, {"feature_names": list(bounds.keys()), "bounds": bounds, "mutable_mask": mask.tolist()})[0])
+    valid_count = sum(1 for a, c in zip(x_adv, x_targets) if check_validity(a, c, {"feature_names": list(bounds.keys()), "bounds": bounds, "mutable_mask": mask.tolist()}, eps)[0])
     valid_rate = valid_count / len(x_adv)
     return asr, avg_delta, valid_rate
 
@@ -467,7 +465,7 @@ def main():
     if args.e8:
         print("\n=== E8: Adversarial training ===")
         ensure_data(args.dataset)
-        run_e8(args.dataset, models, args.random_state)
+        run_e8(args.dataset, models, random_state=args.random_state)
 
     save_registry()
     print(f"\nAll done. Registry refreshed at {ARTIFACTS_DIR / 'model_registry.json'}")

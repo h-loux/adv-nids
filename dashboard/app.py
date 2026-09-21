@@ -316,7 +316,7 @@ def render_attack_tab():
     st.session_state["attack_config"] = {"attack": attack_name, "eps": eps}
 
     run = st.button("Run Attack", type="primary", key="run_attack_btn",
-                    disabled=st.session_state.get("current_sample") is None)
+                    disabled=st.session_state.get("sample") is None)
 
     if run:
         with st.spinner("Running attack..."):
@@ -346,7 +346,7 @@ def render_attack_tab():
     # FR11 — session reset
     st.markdown("---")
     if st.button("Clear", key="clear_btn"):
-        for key in ["current_sample", "clean_result", "attack_result",
+        for key in ["sample", "clean_result", "attack_result",
                      "attack_config", "current_adv_x", "file_uploader"]:
             st.session_state.pop(key, None)
         st.rerun()
