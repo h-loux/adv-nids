@@ -1,1 +1,1 @@
-"""Adversarial NIDS — network intrusion detection + evasion research pipeline."""
+"""Adversarial robustness evaluation of ML-based NIDS."""
