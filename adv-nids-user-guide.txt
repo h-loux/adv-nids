@@ -1,0 +1,212 @@
+Adversarial NIDS Evasion Console — User Guide
+==============================================
+
+What is this?
+-------------
+This tool attacks a trained network intrusion detection system (NIDS).
+You pick a network flow that the model correctly identifies as an attack,
+then perturb its features so the model misclassifies it as benign traffic.
+
+It answers your professor's question:
+  "If your IDS achieves 98% F1 under normal testing, does performance
+   collapse when an attacker slightly modifies network features?"
+
+
+Step 1: Setup
+-------------
+1. Open http://localhost:8501 in your browser.
+2. Go to the "Setup" tab.
+3. Dataset: "dummy" (synthetic data with REAL CICIDS-2017 feature names).
+4. Model: pick one (LR, RF, XGB, MLP, CNN1D).
+5. The model loads instantly (pre-trained, no wait).
+6. Note the clean metrics (F1, AUROC, Accuracy, Recall).
+
+
+Step 2: Attack Console
+----------------------
+1. Go to the "Attack Console" tab.
+2. "Flow source": pick a network flow (a single packet/ connection).
+   - The dropdown shows flow index, true label (attack/benign), and attack family.
+3. Look at "Clean prediction": the model should already classify it correctly.
+4. Choose attack method (FGSM or PGD) and epsilon (ε).
+5. Click "Run attack".
+6. Watch the model flip from "Attack" to "Benign".
+
+
+Step 3: Read the Result
+-----------------------
+The result panel shows whether the attack succeeded and how.
+
+
+=== TERM EXPLANATIONS ===
+
+
+Epsilon (ε)
+----------
+What it is: The maximum amount the attacker can change each feature.
+Why it matters: Controls attack strength. Small ε = tiny, stealthy changes.
+  Large ε = obvious changes (might look unrealistic).
+Where it lives: Scaled feature space (after StandardScaler normalization).
+Typical values: 0.05 (stealthy) to 1.0 (aggressive).
+
+In scaled space: ε=0.5 means each feature can change by 0.5 standard deviations.
+Example: If packet_length_mean normally averages 2.0 with std 1.0, the attacker
+can shift it to between 1.5 and 2.5 (in scaled units).
+
+FGSM (Fast Gradient Sign Method)
+--------------------------------
+What it is: A single-step attack.
+How it works:
+  1. Compute the gradient of the loss with respect to the input features.
+  2. For each feature, nudge it by ε * sign(gradient).
+  3. "sign(gradient)" = +1 if increasing the feature increases loss, -1 if decreasing helps.
+Why it's fast: One step, done.
+Limitation: Not always optimal — it uses the gradient at one point only.
+
+PGD (Projected Gradient Descent)
+--------------------------------
+What it is: FGSM, but repeated (40 iterations by default).
+How it works:
+  1. Take a small step (ε/40 per step).
+  2. Re-compute gradient at the new point.
+  3. Take another step.
+  4. "Project" back to the ε-ball (ensure perturbation hasn't grown too large).
+  5. Repeat 40 times.
+Why it's stronger: It follows the gradient landscape, finding better directions.
+Trade-off: Slower (40x more compute) but higher success rate.
+
+Softmax (P(benign) / P(attack))
+--------------------------------
+What it is: The model's output converted to probabilities.
+How it works: The model outputs two raw numbers (logits). Softmax converts them
+to probabilities that sum to 1.0.
+Example: P(benign)=0.97, P(attack)=0.03 means the model is 97% sure it's benign.
+If P(attack) > 0.5, the model predicts "attack".
+
+Evasion Succeeded
+-----------------
+What it means: The attack worked. The model changed its prediction from
+"attack" to "benign" for a flow that is actually malicious.
+Why it matters: In a real network, this means a real attack packet would
+pass through the IDS undetected.
+
+Validity Check
+--------------
+What it checks: The perturbed packet still looks like real traffic.
+Specific checks:
+  - Immutable fields unchanged (e.g. source port if attacker can't control it)
+  - All features within their realistic bounds (no negative packet counts)
+  - Flag counts are valid integers (0, 1, or 2 — not 0.5)
+  - Perturbation in scaled space ≤ ε (the attacker stayed within budget)
+Why it matters: A "valid" attack is one a real attacker could actually execute
+without creating an obviously fake packet.
+
+Behaviour Preserved
+-------------------
+What it checks: Despite the perturbation, the packet is still the same type
+of attack (e.g. still a PortScan, not a DoS).
+Why this matters: The adversarial example should be semantically equivalent
+to the original — just with tweaked feature values, not a completely different
+attack type.
+
+L1 Norm
+-------
+What it is: The total amount of change across ALL features.
+Formula: Sum of |x_adv[i] - x_clean[i]| for all features i.
+Example: L1 = 6.65 means the attacker changed features by a total of 6.65
+across all 78 features (in raw space).
+Why it matters: Tells you how "diffuse" the attack was — spread thin or
+concentrated in few features.
+
+L-infinity (L∞) Norm
+--------------------
+What it is: The single largest change to any ONE feature.
+Formula: max(|x_adv[i] - x_clean[i]|) over all features i.
+Example: L∞ = 1.38 means the biggest single feature change was 1.38 units.
+Why it matters: If this equals ε, the attacker used its full budget on one
+feature. If less, the budget was spread across multiple features.
+
+Feature Table
+-------------
+Columns:
+  - Feature: the CICIDS-2017 feature name (e.g. "flow_duration")
+  - Original: value before attack
+  - Perturbed: value after attack
+  - Delta: how much it changed (positive=cyan, negative=red)
+
+Top features by change show where the attacker focused its effort.
+Example: max_packet_length 3.12 → 1.74 (delta -1.38) means the attacker
+reduced this feature's value by 1.38 to fool the model.
+
+Gradient Chart
+--------------
+What it shows: The model's sensitivity to each feature.
+How it's computed: d P(benign) / d feature for each feature.
+  - Large positive gradient = increasing this feature pushes model toward "benign"
+  - Large negative gradient = decreasing this feature helps evasion
+The attack targets features with large gradients first — those are the features
+the model relies on most for classification.
+
+Common CICIDS-2017 Features You'll See
+--------------------------------------
+  - flow_duration: How long the connection lasted (seconds)
+  - fwd_packet_len_mean: Average size of outgoing packets
+  - bwd_packet_length_max: Largest incoming packet
+  - total_length_of_fwd_packets: Total bytes in outgoing direction
+  - min_packet_length: Smallest packet in the flow
+  - max_packet_length: Largest packet in the flow
+  - packet_length_mean: Average packet size
+  - fwd_header_length: Total header bytes in outgoing packets
+  - flow_bytes/s: Bytes per second (throughput)
+  - flow_packets/s: Packets per second (rate)
+  - fwd_psh_flags: Count of TCP PSH flags (binary: 0 or 1)
+  - fwd_urg_flags: Count of TCP URG flags (binary: 0 or 1)
+  - flow_iat_mean: Mean time between packets (inter-arrival time)
+  - subflow_fwd_packets: Number of subflow packets (forward direction)
+  - init_win_bytes_forward: Initial TCP window size (forward)
+  - min_seg_size_forward: Minimum segment size (forward)
+
+These are all network-layer features that a real IDS like CIC-IDS2017
+extracts from packet captures. The attacker perturbs these values to create
+an adversarial example that looks like different traffic to the model
+while preserving the actual malicious intent.
+
+
+=== RESEARCH QUESTIONS THIS TOOL ANSWERS ===
+
+RQ1: Which IDS architectures are most vulnerable?
+  -> Compare attack success across LR, RF, XGB, MLP, CNN1D in the Setup tab.
+  LR is usually most vulnerable (linear decision boundary). RF/XGB are
+  more robust (tree-based, non-differentiable). MLP/CNN1D fall in between.
+
+RQ2: Which features are most susceptible?
+  -> Look at the Feature Table and Gradient Chart after an attack.
+  Features with large gradients and large deltas are the most susceptible.
+  These are the features the model relies on most, so perturbing them
+  causes the biggest shifts in prediction.
+
+RQ3: Can adversarial training improve robustness?
+  -> Not shown in this demo, but the framework supports it. Adversarial
+  training retrains the model on adversarial examples so it learns to
+  resist perturbations. The metric is: does F1 drop significantly after
+  adversarial training? (It shouldn't — that's the point.)
+
+
+=== RUNNING LOCALLY ===
+
+Prerequisites: Python 3.11+ with packages in the project venv.
+
+  1. Activate:  source .venv/bin/activate   (or .venv\Scripts\activate on Windows)
+  2. Pre-train models (only needed once):
+     python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d
+  3. Launch dashboard:
+     streamlit run dashboard/app.py
+  4. Open http://localhost:8501
+
+To run the terminal demo instead:
+  python -m nids.demo --dataset dummy --model lr --method pgd --eps 0.5
+
+To use REAL CICIDS-2017 data:
+  1. Download CICIDS2017.zip from the official source
+  2. Place the CSV at: data/raw/cicids2017_raw.csv
+  3. The pipeline will process it automatically on next load.
