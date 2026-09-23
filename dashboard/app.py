@@ -6,11 +6,13 @@ network flows with FGSM, PGD, or Carlini-Wagner.
 Run:  streamlit run dashboard/app.py
 """
 import json
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.preprocessing import StandardScaler
 
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays
@@ -39,6 +41,92 @@ h3{color:#cbd5e1}
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+@st.cache_data
+def process_uploaded_csv(uploaded_file, dataset_name: str) -> str:
+    """Convert an uploaded CSV into the processed .npz + meta.json format."""
+    df = pd.read_csv(uploaded_file)
+    df.columns = df.columns.str.strip()
+
+    # Auto-detect label column
+    label_col = None
+    for candidate in ["label", "Label", "class", "Class", "target", "Target"]:
+        if candidate in df.columns:
+            label_col = candidate
+            break
+
+    if label_col is None:
+        st.error("Could not find a label column. Expected: 'label', 'Label', 'class', or 'target'.")
+        return ""
+
+    # Auto-detect attack family column (CICIDS-style)
+    family_col = label_col
+
+    # Drop non-feature columns
+    drop_cols = {label_col, family_col}
+    # Also drop ID-like columns
+    for c in df.columns:
+        if any(k in c.lower() for k in ["flow id", "src ip", "dst ip", "src port", "dst port"]):
+            drop_cols.add(c)
+
+    feature_cols = [c for c in df.columns if c not in drop_cols]
+
+    X = df[feature_cols].values.astype(np.float64)
+    label_series = df[label_col]
+    y = np.where(label_series.astype(str).str.upper() != "BENIGN", ATTACK, BENIGN)
+    y_family = label_series.astype(str).values
+
+    # Split
+    from nids.config import SPLIT_SEED
+    idx = np.random.RandomState(SPLIT_SEED).permutation(len(y))
+    n_test = min(5000, len(y) // 5)
+    train_idx, test_idx = idx[n_test:], idx[:n_test]
+
+    scaler = StandardScaler().fit(X[train_idx])
+    X_train_scaled = scaler.transform(X[train_idx])
+    X_test_scaled = scaler.transform(X[test_idx])
+
+    mutable_mask = [True] * len(feature_cols)
+    bounds = {}
+    for i, name in enumerate(feature_cols):
+        col = X[train_idx, i]
+        lo, hi = float(np.percentile(col, 1)), float(np.percentile(col, 99))
+        bounds[name] = {"min": lo, "max": hi, "mutable": True}
+    int_features = [i for i, name in enumerate(feature_cols) if np.allclose(X[:, i], np.round(X[:, i]), atol=1e-6)]
+
+    from nids.config import LABEL_NAMES
+    meta = {
+        "dataset": dataset_name,
+        "n_features": len(feature_cols),
+        "feature_names": list(feature_cols),
+        "mutable_mask": mutable_mask,
+        "bounds": bounds,
+        "int_features": int_features,
+        "one_hot_groups": {},
+        "label_names": LABEL_NAMES,
+        "n_train": len(train_idx),
+        "n_test": len(test_idx),
+    }
+
+    proc = DATA_DIR / "processed"
+    meta_dir = DATA_DIR / "meta"
+    proc.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
+
+    np.savez(proc / f"{dataset_name}_train.npz",
+             X_scaled=X_train_scaled, X_raw=X[train_idx], y=y[train_idx],
+             y_family=y_family[train_idx])
+    np.savez(proc / f"{dataset_name}_test.npz",
+             X_scaled=X_test_scaled, X_raw=X[test_idx], y=y[test_idx],
+             y_family=y_family[test_idx])
+    import json as _json
+    with open(meta_dir / f"{dataset_name}_meta.json", "w") as f:
+        _json.dump(meta, f, indent=2)
+
+    st.success(f"Dataset '{dataset_name}' loaded: {len(y)} flows, {len(feature_cols)} features")
+    return dataset_name
 
 
 # ---------------------------------------------------------------------------
@@ -78,12 +166,42 @@ def load_data(dataset):
 # ---------------------------------------------------------------------------
 def render_setup():
     st.subheader("Setup")
-    st.caption("Select a pre-trained model and dataset to begin.")
+    st.caption("Select a dataset and model to begin.")
 
-    dataset = st.selectbox("Dataset", ["dummy"], index=0,
-                           help="Real CICIDS2017/UNSW-NB15 datasets go here when you download them. "
-                                "'dummy' is a synthetic stand-in with the same 78 CICIDS feature names.")
+    # Discover available datasets
+    proc_dir = DATA_DIR / "processed"
+    available = ["dummy"]
+    if proc_dir.exists():
+        for f in proc_dir.glob("*_test.npz"):
+            name = f.name.replace("_test.npz", "")
+            if name != "dummy":
+                available.append(name)
+
+    # CSV upload
+    uploaded = st.file_uploader(
+        "Upload a CSV dataset (CICIDS2017, UNSW-NB15, or custom)",
+        type=["csv"],
+        help="Upload a CSV with a label column ('Label', 'label', 'class', or 'target'). "
+             "Feature columns must be numeric. The app auto-detects and processes it."
+    )
+    if uploaded is not None:
+        ds_name = uploaded.name.replace(".csv", "")
+        new_ds = process_uploaded_csv(uploaded, ds_name)
+        if new_ds:
+            available = list(dict.fromkeys([new_ds] + available))
+            st.rerun()
+
+    dataset = st.selectbox("Dataset", options=available, index=0,
+                           help="Select a dataset. Uploaded CSVs appear here automatically.")
     st.session_state["dataset"] = dataset
+
+    # Show dataset info
+    try:
+        arr = get_test_arrays(dataset)
+        y = arr["y"]
+        st.caption(f"🌐 {len(y)} test flows — Benign: {(y==0).sum()}, Attack: {(y==1).sum()}")
+    except Exception:
+        pass
 
     model_name = st.selectbox("Victim model", ALL_MODELS, index=0,
                               help="LR — fast, interpretable. RF/XGB — strong baselines. "
@@ -106,7 +224,6 @@ def render_setup():
     except FileNotFoundError as e:
         st.warning(str(e))
 
-    # Explain the research question
     st.markdown("---")
     st.markdown("""
 **Research question this tab addresses**: Given an IDS that achieves ~99% F1 on clean
@@ -177,6 +294,7 @@ def render_attack():
     st.markdown("**Step 3 — Launch attack**: Perturb features to flip the prediction.")
     st.caption("**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
                "**PGD** = iterates FGSM multiple times with projection. "
+               "**CW** = Carlini-Wagner optimization — finds the smallest perturbation. "
                "**ε** = max perturbation per feature (controls how much the features can change).")
 
     col_a, col_b = st.columns(2)
@@ -358,7 +476,7 @@ intent — so the model misclassifies it as benign?
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
 """)
     st.code("python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d", language="bash")
-    st.caption("Pre-trained models load instantly in the dashboard. CW attack is ready — select 'CW' in the Attack Console.")
+    st.caption(\"Pre-trained models load instantly in the dashboard. Upload a CSV in Setup to use your own dataset. CW attack is ready — select 'CW' in the Attack Console.\")
 
 
 # ---------------------------------------------------------------------------
