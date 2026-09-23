@@ -20,12 +20,13 @@ from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
 )
 
-st.set_page_config(page_title="Adversarial NIDS", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Adversarial NIDS", page_icon="🏰", layout="wide")
 
 # ---------------------------------------------------------------------------
-# CSS — clean dark theme with cyan accents (student-project style)
+# CSS — clean dark theme with cyan accents + Font Awesome fortress
 # ---------------------------------------------------------------------------
-st.markdown("""<style>
+st.markdown("""<script src="https://kit.fontawesome.com/a076d0569d.js" crossorigin="anonymous"></script>
+<style>
 #MainMenu,footer,header{visibility:hidden}
 .stApp{background:#0f1117;color:#e4e4e4;font-family:'Segoe UI',sans-serif}
 h1,h2,h3,h4{color:#ffffff;font-weight:700}
