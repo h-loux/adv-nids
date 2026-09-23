@@ -64,13 +64,13 @@ def get_meta(dataset: str) -> dict:
 
 def get_test_arrays(dataset: str) -> dict[str, np.ndarray]:
     """Load the processed test .npz for a dataset."""
-    with np.load(PROCESSED_DIR / f"{dataset}_test.npz") as data:
+    with np.load(PROCESSED_DIR / f"{dataset}_test.npz", allow_pickle=True) as data:
         return {k: data[k] for k in data.files}
 
 
 def get_train_arrays(dataset: str) -> dict[str, np.ndarray]:
     """Load the processed train .npz for a dataset."""
-    with np.load(PROCESSED_DIR / f"{dataset}_train.npz") as data:
+    with np.load(PROCESSED_DIR / f"{dataset}_train.npz", allow_pickle=True) as data:
         return {k: data[k] for k in data.files}
 
 
