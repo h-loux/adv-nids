@@ -436,6 +436,9 @@ def render_attack():
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
                                help="Max allowed perturbation per feature. Higher = stronger attack.")
 
+    # Reset attacking flag on each render to avoid stuck state from prior crashes
+    st.session_state.pop("_attacking", None)
+
     if st.button("Run attack ▶", type="primary", use_container_width=True,
                  disabled=st.session_state.get("_attacking", False),
                  key="run_attack_btn"):
