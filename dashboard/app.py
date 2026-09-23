@@ -74,7 +74,21 @@ def process_uploaded_csv(uploaded_file, dataset_name: str) -> str:
 
     feature_cols = [c for c in df.columns if c not in drop_cols]
 
+    # Convert feature columns to numeric, coercing errors to NaN
+    for col in feature_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Drop rows with NaN in features or label
+    df = df.dropna(subset=feature_cols + [label_col]).reset_index(drop=True)
+
+    if len(df) == 0:
+        st.error("All rows were dropped during cleaning (non-numeric values in features). "
+                 "Try a CSV with numeric feature columns only.")
+        return ""
+
     X = df[feature_cols].values.astype(np.float64)
+    # Replace inf values (from division by zero in flow features like bytes_per_packet)
+    np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
     label_series = df[label_col]
     y = np.where(label_series.astype(str).str.upper() != "BENIGN", ATTACK, BENIGN)
     y_family = label_series.astype(str).values
