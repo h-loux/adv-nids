@@ -17,7 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays
 from nids.models import VictimModel
-from nids.attacks import fgsm, pgd, cw
+from nids.attacks import fgsm, pgd, cw, deepfool, jsma, nes_attack
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
 )
@@ -299,11 +299,13 @@ def render_attack():
 
     col_a, col_b = st.columns(2)
     with col_a:
-        method = st.radio("Attack method", ("FGSM", "PGD", "CW"), horizontal=True,
-                          help="**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
-                               "**PGD** = iterates FGSM multiple times with projection. "
-                               "**CW** = Carlini-Wagner optimization: finds smallest perturbation that fools the model.")
-        attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw}[method]
+        method = st.radio("Attack method", ("FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"),
+                          horizontal=True,
+                          help="**FGSM** = single-step gradient sign. **PGD** = iterative projected gradient. "
+                               "**CW** = optimization-based (smallest perturbation). **DeepFool** = boundary distance estimation. "
+                               "**JSMA** = Jacobian-based saliency (sparse perturbation). **NES** = black-box zeroth-order (no gradients).")
+        attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw, "DeepFool": deepfool,
+                     "JSMA": jsma, "NES": nes_attack}[method]
     with col_b:
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
                                help="Max allowed perturbation per feature. Higher = stronger attack.")
@@ -462,7 +464,7 @@ intent — so the model misclassifies it as benign?
 1. **config** — frozen seeds, epsilon grid, label convention
 2. **data** — CICIDS-2017 / UNSW-NB15 network flow features
 3. **models** — LR, RF, XGBoost, MLP, CNN1D (pre-trained, loaded from `artifacts/`)
-4. **attacks** — FGSM (single-step), PGD (iterative), CW (optimization-based), projection (constraint enforcement)
+4. **attacks** — FGSM, PGD, CW, DeepFool, JSMA (white-box), NES (black-box), projection
 5. **eval** — metrics (F1, AUROC, FPR), validity checks, transfer matrix
 6. **dashboard** — this UI
 
@@ -471,6 +473,9 @@ intent — so the model misclassifies it as benign?
 - **FGSM**: nudge each feature by ε × sign(gradient) — one shot.
 - **PGD**: iterate FGSM with projection — stronger than FGSM.
 - **CW**: Carlini-Wagner optimization — finds minimal perturbation via Adam + binary search — strongest white-box attack.
+- **DeepFool**: Line-search to decision boundary — finds perturbation direction to cross the boundary.
+- **JSMA**: Jacobian-based salience map — targets specific features for sparse perturbation.
+- **NES**: Black-box zeroth-order — estimates gradients via random sampling, no model access needed.
 - **Validity**: perturbed sample stays within realistic bounds.
 - **Evasion**: attack succeeded — malicious packet classified as benign.
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
