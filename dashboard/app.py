@@ -499,15 +499,18 @@ def render_attack():
                "Positive delta (cyan) = increased; Negative delta (red) = decreased.")
 
     diff_df = pd.DataFrame(r["diff"])
-    def color_delta(val):
-        if isinstance(val, (int, float)):
-            if val > 0:
-                return "color: #06b7de"
-            elif val < 0:
-                return "color: #f56565"
-        return ""
-    styled = diff_df.style.map(color_delta, subset=["delta"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    if len(diff_df) == 0 or "delta" not in diff_df.columns:
+        st.caption("No features were modified by the attack (or perturbation was below threshold).")
+    else:
+        def color_delta(val):
+            if isinstance(val, (int, float)):
+                if val > 0:
+                    return "color: #06b7de"
+                elif val < 0:
+                    return "color: #f56565"
+            return ""
+        styled = diff_df.style.map(color_delta, subset=["delta"])
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Gradient magnitudes
     grad_masked = np.abs(r["grad"]) * r["mutable_mask"].astype(float)
