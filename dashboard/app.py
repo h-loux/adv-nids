@@ -40,6 +40,29 @@ h3{color:#cbd5e1}
 .stProgress>div>div{border-radius:4px;background:#0ea5e9}
 </style>""", unsafe_allow_html=True)
 
+# Custom loader CSS (shown during attacks)
+st.markdown("""<style>
+.loader-container{
+    display:flex;justify-content:center;align-items:center;
+    flex-direction:column;gap:12px;padding:24px;
+}
+.loader{
+  width:100px;height:45px;position:relative;
+}
+.loader:before,.loader:after{
+  content:"";position:absolute;inset:0;background:#06b7de;
+  box-shadow:0 0 0 50px;
+  clip-path:polygon(-50px -20px,10% -12px,20% 0,calc(50% - 15px) 0,calc(50% - 10px) -20px,calc(50% - 8px) -15px,calc(50% + 8px) -15px,calc(50% + 10px) -20px,calc(50% + 15px) 0,80% 0,90% -12px,calc(100% + 50px) -20px,100% 80%,calc(100% + 10px) calc(100% + 10px),60% 100%,50% calc(100% + 15px),40% 100%,-10px calc(100% + 10px),0 80%);
+}
+.loader:after{
+  animation:l9 1s infinite;
+  transform:perspective(300px) translateZ(0px);
+}
+@keyframes l9{
+  to{transform:perspective(300px) translateZ(100px);opacity:0}
+}
+</style>""", unsafe_allow_html=True)
+
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -203,10 +226,17 @@ def render_setup():
         ds_name = uploaded.name.replace(".csv", "")
         new_ds = process_uploaded_csv(uploaded, ds_name)
         if new_ds:
-            available = list(dict.fromkeys([new_ds] + available))
-            st.rerun()
+            # Store in session state instead of rerun to avoid page flicker
+            st.session_state["uploaded_dataset"] = new_ds
 
-    dataset = st.selectbox("Dataset", options=available, index=0,
+    # Determine default dataset index
+    default_idx = 0
+    uploaded_ds = st.session_state.get("uploaded_dataset")
+    if uploaded_ds and uploaded_ds in available:
+        available = list(dict.fromkeys([uploaded_ds] + available))
+        default_idx = available.index(uploaded_ds)
+
+    dataset = st.selectbox("Dataset", options=available, index=default_idx,
                            help="Select a dataset. Uploaded CSVs appear here automatically.")
     st.session_state["dataset"] = dataset
 
@@ -365,32 +395,45 @@ def render_attack():
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
                                help="Max allowed perturbation per feature. Higher = stronger attack.")
 
-    if st.button("Run attack ▶", type="primary", use_container_width=True):
-        result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
-        x_adv = result.x_adv  # AttackResult -> raw ndarray
-        queries = result.n_queries if hasattr(result, 'n_queries') else 0
-        probs_after = vm.predict_proba(x_adv)[0]
-        pred_after = int(np.argmax(probs_after))
+    if st.button("Run attack ▶", type="primary", use_container_width=True,
+                 disabled=st.session_state.get("_attacking", False),
+                 key="run_attack_btn"):
+        st.session_state["_attacking"] = True
+        try:
+            with st.status(f"Running {method} attack (ε={eps})...",
+                           expanded=True) as status:
+                st.markdown('<div class="loader-container"><div class="loader"></div>'
+                            f'<p style="color:#06b7de">Perturbing network flow features...</p></div>',
+                            unsafe_allow_html=True)
+                result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
+                x_adv = result.x_adv  # AttackResult -> raw ndarray
+                queries = result.n_queries
+                probs_after = vm.predict_proba(x_adv)[0]
+                pred_after = int(np.argmax(probs_after))
 
-        valid, violations = check_validity(x_adv, x_clean, meta, eps, model=vm)
-        _, behaviour_msg = check_behaviour_preserved(pred_before, pred_after, true_label)
-        l1, linf = perturbation_magnitude(x_adv, x_clean)
-        diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
-        evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
-        grad = vm.gradient(x_clean, target=BENIGN)
-        grad = grad.reshape(-1) if grad.ndim > 1 else grad
+                valid, violations = check_validity(x_adv, x_clean, meta, eps, model=vm)
+                _, behaviour_msg = check_behaviour_preserved(pred_before, pred_after, true_label)
+                l1, linf = perturbation_magnitude(x_adv, x_clean)
+                diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
+                evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
+                grad = vm.gradient(x_clean, target=BENIGN)
+                grad = grad.reshape(-1) if grad.ndim > 1 else grad
 
-        st.session_state["result"] = dict(
-            evasion=evasion, valid=valid, violations=violations,
-            msg=behaviour_msg, label_before=LABEL_NAMES[pred_before],
-            label_after=LABEL_NAMES[pred_after],
-            probs_before={"benign": float(probs_before[0]), "attack": float(probs_before[1])},
-            probs_after={"benign": float(probs_after[0]), "attack": float(probs_after[1])},
-            l1=l1, linf=linf, diff=diff, grad=grad,
-            x_clean=x_clean, x_adv=x_adv, true_label=true_label,
-            mutable_mask=mutable_mask, feature_names=feature_names,
-            eps=eps, method=method, queries=queries,
-        )
+                st.session_state["result"] = dict(
+                    evasion=evasion, valid=valid, violations=violations,
+                    msg=behaviour_msg, label_before=LABEL_NAMES[pred_before],
+                    label_after=LABEL_NAMES[pred_after],
+                    probs_before={"benign": float(probs_before[0]), "attack": float(probs_before[1])},
+                    probs_after={"benign": float(probs_after[0]), "attack": float(probs_after[1])},
+                    l1=l1, linf=linf, diff=diff, grad=grad,
+                    x_clean=x_clean, x_adv=x_adv, true_label=true_label,
+                    mutable_mask=mutable_mask, feature_names=feature_names,
+                    eps=eps, method=method, queries=queries,
+                )
+                status.update(label=f"✓ {method} attack complete", state="complete",
+                              expanded=False)
+        finally:
+            st.session_state["_attacking"] = False
 
     r = st.session_state.get("result")
     if not r:
