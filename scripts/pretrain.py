@@ -16,7 +16,7 @@ import numpy as np
 from nids.config import (
     ALL_MODELS, ATTACK, BENIGN, LABEL_NAMES, MODEL_SEEDS, PROCESSED_DIR, RESULTS_DIR, ARTIFACTS_DIR,
 )
-from nids.data import get_meta, get_test_arrays, get_train_arrays
+from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.eval.metrics import compute_metrics
 from nids.models.cnn1d import CNN1D
 
@@ -87,6 +87,9 @@ def main():
 
     dataset = args.dataset
     print(f"Pre-training models on '{dataset}' dataset...")
+
+    # Ensure data is generated (idempotent — skips if already exists)
+    load_dataset(dataset)
 
     train = get_train_arrays(dataset)
     test = get_test_arrays(dataset)
