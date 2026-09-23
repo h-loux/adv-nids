@@ -476,7 +476,7 @@ intent — so the model misclassifies it as benign?
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
 """)
     st.code("python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d", language="bash")
-    st.caption(\"Pre-trained models load instantly in the dashboard. Upload a CSV in Setup to use your own dataset. CW attack is ready — select 'CW' in the Attack Console.\")
+    st.caption("Pre-trained models load instantly in the dashboard. Upload a CSV in Setup to use your own dataset. CW attack is ready — select 'CW' in the Attack Console.")
 
 
 # ---------------------------------------------------------------------------
