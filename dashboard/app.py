@@ -359,20 +359,61 @@ def render_attack():
     # --- Step 2: Clean prediction ---
     st.markdown("---")
     st.markdown("**Step 2 — Before attack**: The model classifies this flow.")
-    st.caption("The bar shows P(benign) and P(attack). If P(attack) > P(benign), "
-               "the model correctly identifies this as an attack.")
+
     probs_before = vm.predict_proba(x_clean)[0]
     pred_before = int(np.argmax(probs_before))
+    conf_before = float(probs_before[1])  # P(attack)
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.metric("Model predicts", LABEL_NAMES[pred_before],
-                  help=f"P(attack) = {probs_before[1]:.4f}")
-        st.metric("True label", LABEL_NAMES[true_label])
-        st.caption(f"Attack family: {true_family}")
-    with c2:
-        st.progress(float(probs_before[0]), text=f"P(benign) = {probs_before[0]:.4f}")
-        st.progress(float(probs_before[1]), text=f"P(attack) = {probs_before[1]:.4f}")
+    # Determine label colors
+    pred_color = "#f85149" if pred_before == ATTACK else "#2ecc71"
+    true_color = "#f85149" if true_label == ATTACK else "#2ecc71"
+    conf_color = "#06b7de" if conf_before < 0.5 else "#f85149"
+
+    st.markdown("""<style>
+.pred-card{border-radius:12px;padding:20px;margin:8px 0;
+  border:1px solid #334155;background:#1e2229}
+.pred-badge{display:inline-block;border-radius:8px;padding:6px 16px;
+  font-weight:700;font-size:1.1em;margin:4px}
+.badge-attack{background:rgba(248,81,73,0.2);color:#f85149;border:1px solid #f85149}
+.badge-bening{background:rgba(46,204,113,0.2);color:#2ecc71;border:1px solid #2ecc71}
+.conf-row{display:flex;align-items:center;gap:8px;margin:6px 0}
+.conf-label{width:80px;color:#94a3b8;font-size:0.85em}
+.conf-bar{flex:1;background:#334155;border-radius:4px;height:12px;overflow:hidden}
+.conf-fill{height:100%;border-radius:4px;transition:width 0.3s}
+</style>""", unsafe_allow_html=True)
+
+    # Prediction card
+    st.markdown(f"""
+    <div class="pred-card">
+      <div class="conf-row">
+        <span class="conf-label">Prediction</span>
+        <span class="pred-badge {'badge-attack' if pred_before == 1 else 'badge-bening'}">
+          {LABEL_NAMES[pred_before]}
+        </span>
+      </div>
+      <div class="conf-row">
+        <span class="conf-label">Confidence</span>
+        <div class="conf-bar">
+          <div class="conf-fill" style="width:{conf_before*100:.1f}%;background:{conf_color}"></div>
+        </div>
+        <span style="color:{conf_color};font-weight:600">{conf_before:.4f}</span>
+      </div>
+      <div class="conf-row">
+        <span class="conf-label">True label</span>
+        <span class="pred-badge {'badge-attack' if true_label == 1 else 'badge-bening'}">
+          {LABEL_NAMES[true_label]}
+        </span>
+      </div>
+      <div class="conf-row">
+        <span class="conf-label">Attack family</span>
+        <span style="color:#cbd5e1">{true_family}</span>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.caption("**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
+               "**PGD** = iterates FGSM with projection. "
+               "**CW** = finds minimal perturbation via optimization. "
+               "**ε** = max perturbation per feature.")
 
     # --- Step 3: Attack ---
     st.markdown("---")
