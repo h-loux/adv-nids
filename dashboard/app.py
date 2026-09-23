@@ -1,7 +1,7 @@
 """Adversarial NIDS Evasion Console — Streamlit dashboard.
 
 Loads pre-trained models from artifacts/ and lets you attack individual
-network flows with FGSM/PGD.
+network flows with FGSM, PGD, or Carlini-Wagner.
 
 Run:  streamlit run dashboard/app.py
 """
@@ -15,7 +15,7 @@ import streamlit as st
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays
 from nids.models import VictimModel
-from nids.attacks import fgsm, pgd
+from nids.attacks import fgsm, pgd, cw
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
 )
@@ -180,25 +180,29 @@ def render_attack():
 
     col_a, col_b = st.columns(2)
     with col_a:
-        method = st.radio("Attack method", ("FGSM", "PGD"), horizontal=True)
-        attack_fn = fgsm if method == "FGSM" else pgd
+        method = st.radio("Attack method", ("FGSM", "PGD", "CW"), horizontal=True,
+                          help="**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
+                               "**PGD** = iterates FGSM multiple times with projection. "
+                               "**CW** = Carlini-Wagner optimization: finds smallest perturbation that fools the model.")
+        attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw}[method]
     with col_b:
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
                                help="Max allowed perturbation per feature. Higher = stronger attack.")
 
     if st.button("Run attack ▶", type="primary", use_container_width=True):
-        with st.spinner(f"Running {method} (ε={eps})..."):
-            x_adv = attack_fn(vm, x_clean, eps, mask=mutable_mask)
-            probs_after = vm.predict_proba(x_adv)[0]
-            pred_after = int(np.argmax(probs_after))
+        result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
+        x_adv = result.x_adv  # AttackResult -> raw ndarray
+        queries = result.n_queries if hasattr(result, 'n_queries') else 0
+        probs_after = vm.predict_proba(x_adv)[0]
+        pred_after = int(np.argmax(probs_after))
 
-            valid, violations = check_validity(x_adv, x_clean, meta, eps, model=vm)
-            _, behaviour_msg = check_behaviour_preserved(pred_before, pred_after, true_label)
-            l1, linf = perturbation_magnitude(x_adv, x_clean)
-            diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
-            evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
-            grad = vm.gradient(x_clean, target=BENIGN)
-            grad = grad.reshape(-1) if grad.ndim > 1 else grad
+        valid, violations = check_validity(x_adv, x_clean, meta, eps, model=vm)
+        _, behaviour_msg = check_behaviour_preserved(pred_before, pred_after, true_label)
+        l1, linf = perturbation_magnitude(x_adv, x_clean)
+        diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
+        evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
+        grad = vm.gradient(x_clean, target=BENIGN)
+        grad = grad.reshape(-1) if grad.ndim > 1 else grad
 
         st.session_state["result"] = dict(
             evasion=evasion, valid=valid, violations=violations,
@@ -209,7 +213,7 @@ def render_attack():
             l1=l1, linf=linf, diff=diff, grad=grad,
             x_clean=x_clean, x_adv=x_adv, true_label=true_label,
             mutable_mask=mutable_mask, feature_names=feature_names,
-            eps=eps, method=method,
+            eps=eps, method=method, queries=queries,
         )
 
     r = st.session_state.get("result")
@@ -246,12 +250,9 @@ def render_attack():
                "biggest change to any one feature. These tell you how much the attacker "
                "had to distort the packet to fool the model.")
     c1, c2, c3 = st.columns(3)
-    c1.metric("L1 norm", f"{r['l1']:.4f}",
-              help="Sum of |changes| across all features, averaged")
-    c2.metric("L∞ norm", f"{r['linf']:.4f}",
-              help="Largest single-feature change")
-    c3.metric("ε bound", f"{r['eps']}",
-              help="Maximum allowed perturbation per feature")
+    c1.metric("L1 norm", f"{r['l1']:.4f}", help="Sum of |changes| across all features")
+    c2.metric("L∞ norm", f"{r['linf']:.4f}", help="Largest single-feature change")
+    c3.metric("Queries", f"{r.get('queries', 0)}", help="Model evaluations used by the attack")
 
     # Validity + behaviour checks
     st.markdown("---")
@@ -342,7 +343,7 @@ intent — so the model misclassifies it as benign?
 1. **config** — frozen seeds, epsilon grid, label convention
 2. **data** — CICIDS-2017 / UNSW-NB15 network flow features
 3. **models** — LR, RF, XGBoost, MLP, CNN1D (pre-trained, loaded from `artifacts/`)
-4. **attacks** — FGSM (single-step), PGD (iterative), projection (constraint enforcement)
+4. **attacks** — FGSM (single-step), PGD (iterative), CW (optimization-based), projection (constraint enforcement)
 5. **eval** — metrics (F1, AUROC, FPR), validity checks, transfer matrix
 6. **dashboard** — this UI
 
@@ -350,12 +351,13 @@ intent — so the model misclassifies it as benign?
 - **Epsilon (ε)**: max perturbation per feature. Controls attack strength.
 - **FGSM**: nudge each feature by ε × sign(gradient) — one shot.
 - **PGD**: iterate FGSM with projection — stronger than FGSM.
+- **CW**: Carlini-Wagner optimization — finds minimal perturbation via Adam + binary search — strongest white-box attack.
 - **Validity**: perturbed sample stays within realistic bounds.
 - **Evasion**: attack succeeded — malicious packet classified as benign.
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
 """)
-    st.code("python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d",
-            language="bash")
+    st.code("python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d", language="bash")
+    st.caption("Pre-trained models load instantly in the dashboard. CW attack is ready — select 'CW' in the Attack Console.")
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +365,7 @@ intent — so the model misclassifies it as benign?
 # ---------------------------------------------------------------------------
 def main():
     st.title("Adversarial NIDS Evasion Console")
-    st.caption("Attack a pre-trained NIDS with FGSM/PGD. Load a model in Setup, attack in the console.")
+    st.caption("Attack a pre-trained NIDS with FGSM, PGD, or CW. Load a model in Setup, attack in the console.")
 
     if "model_trained" not in st.session_state:
         st.session_state["model_trained"] = False

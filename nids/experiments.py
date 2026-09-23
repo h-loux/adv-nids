@@ -20,7 +20,8 @@ import numpy as np
 from nids.config import BENIGN, EPS_GRID, LABEL_NAMES, ALL_MODELS as SUPPORTED_MODELS
 from nids.data import get_meta, get_test_arrays
 from nids.models import make_model
-from nids.attacks import fgsm, pgd
+from nids.attacks import fgsm, pgd, cw
+from nids.attacks.result import AttackResult
 from nids.eval.metrics import compute_metrics
 from nids.eval.validity import (
     check_validity,
@@ -42,6 +43,7 @@ def train_model_for_dataset(dataset, model_name, seed=42):
     X_tr, _, y_tr, _ = train_test_split(X, y, test_size=0.2, random_state=seed, stratify=y)
     scaler = StandardScaler().fit(X_tr)
     vm.set_scaler(scaler)
+    vm.meta = meta  # for validity checks and attack constraints
 
     if vm.is_torch:
         import torch
@@ -108,11 +110,12 @@ def run_attack(dataset, models, attack_fn, eps_list, attack_name):
             valid_count = 0
             for idx in attack_flows:
                 x = X[idx:idx+1]
-                x_adv = attack_fn(vm, x, eps, mask=mutable_mask)
-                p_adv = vm.predict_proba(x_adv)[0]
+                result = attack_fn(vm, x, eps, mask=mutable_mask)
+                x_adv_raw = result.x_adv
+                p_adv = vm.predict_proba(x_adv_raw)[0]
                 if np.argmax(p_adv) == BENIGN:
                     successes += 1
-                is_valid, _ = check_validity(x_adv, x, meta, eps, model=vm)
+                is_valid, _ = check_validity(x_adv_raw, x, meta, eps, model=vm)
                 if is_valid:
                     valid_count += 1
             asr = successes / len(attack_flows)
@@ -121,7 +124,9 @@ def run_attack(dataset, models, attack_fn, eps_list, attack_name):
                 "valid": float(valid_count / len(attack_flows)),
             })
             print(f"  {m} eps={eps}: ASR={asr:.4f} ({successes}/{len(attack_flows)})")
-    out = RESULTS_DIR / ("E2" if attack_fn == fgsm else "E3") / f"{dataset}_{attack_name}_asr.json"
+    dir_map = {"fgsm": "E2", "pgd": "E3", "cw": "E6"}
+    exp_dir = dir_map.get(attack_name, "E2")
+    out = RESULTS_DIR / exp_dir / f"{dataset}_{attack_name}_asr.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     json.dump(results, open(out, "w"), indent=2)
     print(f"  -> {out}")
@@ -137,9 +142,10 @@ def main():
     parser.add_argument("--e1", action="store_true", help="Clean metrics")
     parser.add_argument("--e2", action="store_true", help="FGSM ASR")
     parser.add_argument("--e3", action="store_true", help="PGD ASR")
+    parser.add_argument("--e6", action="store_true", help="Carlini-Wagner ASR")
     args = parser.parse_args()
 
-    if not any([args.e1, args.e2, args.e3]):
+    if not any([args.e1, args.e2, args.e3, args.e6]):
         args.e1 = args.e2 = args.e3 = True
 
     if args.e1:
@@ -151,6 +157,9 @@ def main():
     if args.e3:
         print(f"\n=== E3: PGD ASR ({args.dataset}) ===")
         run_attack(args.dataset, args.models, pgd, args.eps, "pgd")
+    if args.e6:
+        print(f"\n=== E6: CW ASR ({args.dataset}) ===")
+        run_attack(args.dataset, args.models, cw, args.eps, "cw")
 
     return 0
 

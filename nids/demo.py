@@ -16,7 +16,7 @@ import numpy as np
 from nids.config import BENIGN, ATTACK, EPS_GRID, LABEL_NAMES, ALL_MODELS
 from nids.data import get_meta, get_test_arrays
 from nids.models import make_model
-from nids.attacks import fgsm, pgd
+from nids.attacks import fgsm, pgd, cw
 from nids.eval.validity import check_validity
 
 
@@ -57,7 +57,7 @@ def main():
                         choices=list(ALL_MODELS))
     parser.add_argument("--eps", type=float, default=0.5, choices=EPS_GRID,
                         help="Max L-inf perturbation per feature (scaled space)")
-    parser.add_argument("--method", default="fgsm", choices=["fgsm", "pgd"])
+    parser.add_argument("--method", default="fgsm", choices=["fgsm", "pgd", "cw"])
     parser.add_argument("--index", type=int, default=None)
     args = parser.parse_args()
 
@@ -102,8 +102,9 @@ def main():
 
     # 4. Attack
     print(f"\n[5] Launching {args.method.upper()} attack (eps={args.eps}):")
-    attack_fn = fgsm if args.method == "fgsm" else pgd
+    attack_fn = {"fgsm": fgsm, "pgd": pgd, "cw": cw}[args.method]
     x_adv = attack_fn(vm, x_clean, args.eps, mask=mutable_mask)
+    x_adv = x_adv.x_adv  # extract raw adversarial samples from AttackResult
 
     l2 = float(np.linalg.norm(x_adv - x_clean))
     linf = float(np.max(np.abs(x_adv - x_clean) * mutable_mask))
