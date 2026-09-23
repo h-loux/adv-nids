@@ -14,6 +14,23 @@ from sklearn.metrics import (
 )
 
 
+def confusion_matrix_dict(y_true, y_pred, labels=None) -> dict:
+    """Return confusion matrix as a dict with named keys.
+
+    Returns:
+        {"tp": int, "fp": int, "tn": int, "fn": int,
+         "matrix": [[tn, fp], [fn, tp]]}
+    """
+    if labels is None:
+        labels = [0, 1]
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    tn, fp, fn, tp = cm.ravel()
+    return {
+        "tp": int(tp), "fp": int(fp), "tn": int(tn), "fn": int(fn),
+        "matrix": cm.tolist(),
+    }
+
+
 def compute_metrics(y_true, y_pred, y_prob) -> dict:
     """Compute full metric set for binary classification.
 

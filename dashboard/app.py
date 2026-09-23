@@ -21,6 +21,7 @@ from nids.attacks import fgsm, pgd, cw, deepfool, jsma, nes_attack
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
 )
+from nids.eval.metrics import compute_metrics
 
 st.set_page_config(page_title="Adversarial NIDS", page_icon="🏰", layout="wide")
 
@@ -223,6 +224,46 @@ def render_setup():
             cols[3].metric("AUROC", f"{m.get('auroc', 0):.1%}")
     except FileNotFoundError as e:
         st.warning(str(e))
+
+    # Confusion matrix + feature importance (when model is loaded)
+    if st.session_state.get("model_trained"):
+        vm = st.session_state["victim_model"]
+        try:
+            arr, _ = load_data(dataset)
+            X_test, y_test = arr["X_raw"], arr["y"]
+            probs = vm.predict_proba(X_test)
+            preds = np.argmax(probs, axis=1)
+            metrics = compute_metrics(y_test, preds, probs)
+
+            # Confusion matrix
+            st.markdown("___")
+            st.markdown("**Confusion Matrix** (clean test set)")
+            tn, fp, fn, tp = metrics["tn"], metrics["fp"], metrics["fn"], metrics["tp"]
+            cm_df = pd.DataFrame(
+                [[tn, fp], [fn, tp]],
+                columns=["Pred Benign", "Pred Attack"],
+                index=["True Benign", "True Attack"],
+            )
+            st.dataframe(cm_df, use_container_width=True)
+
+            # Feature importance
+            fns = vm.feature_names or []
+            if hasattr(vm.base, "feature_importances_"):
+                imps = vm.base.feature_importances_
+                fi_df = pd.DataFrame({"feature": fns[:len(imps)], "importance": imps})
+                fi_df = fi_df.sort_values("importance", ascending=True).tail(15)
+                st.markdown("___")
+                st.markdown("**Top 15 Feature Importances** (tree-based)")
+                st.bar_chart(fi_df.set_index("feature"))
+            elif hasattr(vm.base, "coef_"):
+                imps = np.abs(vm.base.coef_[0])
+                fi_df = pd.DataFrame({"feature": fns[:len(imps)], "importance": imps})
+                fi_df = fi_df.sort_values("importance", ascending=True).tail(15)
+                st.markdown("___")
+                st.markdown("**Top 15 Feature Importances** (|coefficient|)")
+                st.bar_chart(fi_df.set_index("feature"))
+        except Exception:
+            pass
 
     st.markdown("---")
     st.markdown("""
