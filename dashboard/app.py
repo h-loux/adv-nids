@@ -25,16 +25,16 @@ st.set_page_config(page_title="Adversarial NIDS", page_icon="🛡️", layout="w
 # ---------------------------------------------------------------------------
 # CSS — clean dark theme with cyan accents (student-project style)
 # ---------------------------------------------------------------------------
-st.markdown("""<style>
+#st.markdown("""<style>
 #MainMenu,footer,header{visibility:hidden}
-.stApp{background:#0f1117;color:#e4e4e4;font-family:'Segoe UI',sans-serif}
-h1,h2,h3,h4{color:#ffffff;font-weight:700}
-h2{border-bottom:2px solid #334155;padding-bottom:8px}
-h3{color:#cbd5e1}
-.stButton>button{background:#0ea5e9;color:white;border:none;border-radius:6px;padding:8px 20px;font-weight:500}
-.stButton>button:hover{background:#0284c7}
-.stProgress>div>div{border-radius:4px;background:#0ea5e9}
-</style>""", unsafe_allow_html=True)
+#.stApp{background:#0f1117;color:#e4e4e4;font-family:'Segoe UI',sans-serif}
+#h1,h2,h3,h4{color:#ffffff;font-weight:700}
+#h2{border-bottom:2px solid #334155;padding-bottom:8px}
+#h3{color:#cbd5e1}
+#.stButton>button{background:#0ea5e9;color:white;border:none;border-radius:6px;padding:8px 20px;font-weight:500}
+#.stButton>button:hover{background:#0284c7}
+#.stProgress>div>div{border-radius:4px;background:#0ea5e9}
+#</style>""", unsafe_allow_html=True) 
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
@@ -277,18 +277,14 @@ def render_attack():
     st.markdown(f"**Which features did the attack change? (top {len(r['diff'])})**")
     st.caption("The attack pushes on the features the model relies on most. "
                "Positive delta (cyan) = increased; Negative delta (red) = decreased.")
+    
+    diff_df = pd.DataFrame(r.get("diff", []))
 
-    diff_df = pd.DataFrame(r["diff"])
-    def color_delta(val):
-        if isinstance(val, (int, float)):
-            if val > 0:
-                return "color: #06b7de"
-            elif val < 0:
-                return "color: #f56565"
-        return ""
-    styled = diff_df.style.map(color_delta, subset=["delta"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
+    if diff_df.empty:
+        st.info("No feature changes were produced for this attack.")
+    else:
+        st.dataframe(diff_df, use_container_width=True, hide_index=True)
+    
     # Gradient magnitudes
     grad_masked = np.abs(r["grad"]) * r["mutable_mask"].astype(float)
     if grad_masked.any():
