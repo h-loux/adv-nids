@@ -136,14 +136,33 @@ python -m nids.experiments --dataset dummy --models lr rf xgb mlp cnn1d ensemble
 
 ## Dashboard
 
-The Setup tab can train or refresh the selected model and displays held-out test metrics. The CLI supports training multiple models at once. Models and results are written locally; the app does not upload dataset contents.
+The sidebar navigation switches between Model setup, Attack console, Results gallery, and About. Model setup can upload a CSV, train or refresh the selected model, and display held-out test metrics and diagnostics. The Results gallery charts every available E1 model's F1, recall, false-alert counts, and missed-attack counts from its actual clean-test metrics, then provides an interactive per-class outcome breakdown and raw JSON in a secondary expander. Saved supplied-augmentation runs appear there as paired clean-set comparisons; if none exist, the page explains how to create one from a reviewed local archive. Setup controls remain native Streamlit widgets so values stay synchronized with Python session state. The CLI supports training multiple models at once. Models and results are written locally; the app does not upload dataset contents. Shared styles live in `dashboard/styles.css`; theme colors are configured in `.streamlit/config.toml`.
 
-**Tabs**:
+### Supplied-augmentation training comparison
 
-1. **Setup** — Select or upload a dataset, train/select a model, and view clean test metrics
-2. **Attack Console** — Browse a flow, see clean prediction, run live FGSM/PGD attack, view result panel with feature diff
-3. **Results Gallery** — Precomputed figures (ASR curves, transfer heatmap, confusion matrices)
-4. **About** — Project title, research questions, threat model
+The Model setup tab can optionally train a **separate** model using a local `.npz` file of already-prepared training augmentations. The archive must contain `X_raw` (raw feature rows), `y` (binary labels), and `source_indices` (zero-based row indices into the selected dataset's clean training split). Each label must match the label of its source training row, and each augmented row must differ from that source. The scaler is fitted on clean training rows only and reused for both clean and supplied rows. The baseline artifact is not overwritten.
+
+For example, package previously reviewed arrays as follows:
+
+```python
+import numpy as np
+
+np.savez_compressed(
+    "training_augmentations.npz",
+    X_raw=augmented_X_raw,
+    y=source_labels,
+    source_indices=clean_train_row_indices,
+)
+```
+
+The app records the input file hash, model seed, training counts, clean metrics, and a baseline-versus-augmented clean-test comparison under `results/E9/`. Source indices and label equality are checked, but the app cannot independently establish how an uploaded row was created or whether its manipulation preserves the underlying class; review that provenance before training. This workflow does not generate or evaluate adversarial examples, and clean-test results alone are not evidence of adversarial robustness.
+
+**Workspace sections**:
+
+1. **Model setup** — Select or upload a dataset, train/select a model, and view clean test metrics, confusion matrix, and feature importance
+2. **Attack console** — Browse a flow, inspect its clean prediction, run a selected attack, and review constraint checks and feature changes
+3. **Results gallery** — Compare locally generated clean metrics and supplied-augmentation training runs; missing outputs are identified rather than replaced with sample data
+4. **About** — Research question, architecture, key terms, and training command
 
 ## Data Sources
 

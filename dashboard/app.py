@@ -5,8 +5,11 @@ network flows with FGSM, PGD, or Carlini-Wagner.
 
 Run:  streamlit run dashboard/app.py
 """
+import hashlib
+import io
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -18,55 +21,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from dashboard.ui import (
+    apply_design_system,
+    render_metric_cards,
+    render_page_header,
+    render_prediction_card,
+    render_dataset_profile,
+    render_setup_hero,
+    render_clean_scoreboard,
+    render_clean_model_comparison,
+    render_clean_diagnostics,
+    render_clean_model_landscape,
+)
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.models import VictimModel
-from nids.training import train_and_save_model
+from nids.training import train_and_save_model, train_augmented_and_save_model
 from nids.attacks import fgsm, pgd, cw, deepfool, jsma, nes_attack
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
 )
 from nids.eval.metrics import compute_metrics
 
-st.set_page_config(page_title="Adversarial NIDS", page_icon="🏰", layout="wide")
-
-# ---------------------------------------------------------------------------
-# CSS — clean dark theme with cyan accents + Font Awesome fortress
-# ---------------------------------------------------------------------------
-st.markdown("""<script src="https://kit.fontawesome.com/a076d0569d.js" crossorigin="anonymous"></script>
-<style>
-#MainMenu,footer,header{visibility:hidden}
-.stApp{background:#0f1117;color:#e4e4e4;font-family:'Segoe UI',sans-serif}
-h1,h2,h3,h4{color:#ffffff;font-weight:700}
-h2{border-bottom:2px solid #334155;padding-bottom:8px}
-h3{color:#cbd5e1}
-.stButton>button{background:#0ea5e9;color:white;border:none;border-radius:6px;padding:8px 20px;font-weight:500}
-.stButton>button:hover{background:#0284c7}
-.stProgress>div>div{border-radius:4px;background:#0ea5e9}
-</style>""", unsafe_allow_html=True)
-
-# Custom loader CSS (shown during attacks)
-st.markdown("""<style>
-.loader-container{
-    display:flex;justify-content:center;align-items:center;
-    flex-direction:column;gap:12px;padding:24px;
-}
-.loader{
-  width:100px;height:45px;position:relative;
-}
-.loader:before,.loader:after{
-  content:"";position:absolute;inset:0;background:#06b7de;
-  box-shadow:0 0 0 50px;
-  clip-path:polygon(-50px -20px,10% -12px,20% 0,calc(50% - 15px) 0,calc(50% - 10px) -20px,calc(50% - 8px) -15px,calc(50% + 8px) -15px,calc(50% + 10px) -20px,calc(50% + 15px) 0,80% 0,90% -12px,calc(100% + 50px) -20px,100% 80%,calc(100% + 10px) calc(100% + 10px),60% 100%,50% calc(100% + 15px),40% 100%,-10px calc(100% + 10px),0 80%);
-}
-.loader:after{
-  animation:l9 1s infinite;
-  transform:perspective(300px) translateZ(0px);
-}
-@keyframes l9{
-  to{transform:perspective(300px) translateZ(100px);opacity:0}
-}
-</style>""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="Adversarial NIDS",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+apply_design_system()
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
@@ -196,6 +179,10 @@ def load_model(dataset: str, model_name: str):
     vm.mutable_mask = np.array(artifact["mutable_mask"], dtype=bool)
     vm.meta = artifact.get("meta", {})
     vm.metrics = artifact.get("metrics", {})
+    vm.model_params = artifact.get("model_params", {})
+    vm.seed = artifact.get("seed", 0)
+    vm.epochs = artifact.get("epochs")
+    vm.batch_size = artifact.get("batch_size", 256)
     return vm
 
 
@@ -204,12 +191,222 @@ def load_data(dataset):
     return get_test_arrays(dataset), get_meta(dataset)
 
 
+def _read_augmented_training_archive(contents: bytes) -> tuple[dict, str]:
+    """Read the documented non-pickle NPZ format and return its digest."""
+    archive_digest = hashlib.sha256(contents).hexdigest()
+    try:
+        with np.load(io.BytesIO(contents), allow_pickle=False) as archive:
+            required = {"X_raw", "y", "source_indices"}
+            missing = required - set(archive.files)
+            if missing:
+                raise ValueError(
+                    "NPZ is missing required arrays: " + ", ".join(sorted(missing))
+                )
+            arrays = {name: archive[name] for name in required}
+    except (OSError, EOFError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"Could not read the augmented-data NPZ: {exc}") from exc
+    return arrays, archive_digest
+
+
+def _clean_comparison_path(dataset: str, model_name: str) -> Path:
+    return RESULTS_DIR / "E9" / f"{dataset}_{model_name}_augmented_comparison.json"
+
+
+def _has_comparison_metrics(metrics) -> bool:
+    rate_names = ("f1", "precision", "recall", "fpr", "fnr")
+    return (
+        isinstance(metrics, dict)
+        and all(
+            isinstance(metrics.get(name), (int, float))
+            and not isinstance(metrics[name], bool)
+            and np.isfinite(metrics[name])
+            and 0 <= metrics[name] <= 1
+            for name in rate_names
+        )
+        and isinstance(metrics.get("fn"), int)
+        and not isinstance(metrics.get("fn"), bool)
+        and metrics["fn"] >= 0
+    )
+
+
+def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
+    """Offer a separate clean-evaluation run using user-supplied training rows."""
+    result_path = _clean_comparison_path(dataset, model_name)
+    with st.expander(
+        "Train a separate model from supplied training augmentations",
+        expanded=True,
+    ):
+        st.markdown(
+            "Use this workflow to compare the baseline with a model trained on "
+            "augmentations you already prepared. Upload an NPZ containing "
+            "`X_raw` (rows × features), `y` (labels), and `source_indices` "
+            "(source row in the selected clean training split). The labels must "
+            "match their source rows. This page does not generate augmentations; "
+            "review their validity and provenance before training."
+        )
+        augmented_file = st.file_uploader(
+            "Precomputed training augmentations (.npz)",
+            type=["npz"],
+            key=f"augmented_training_file_{dataset}_{model_name}",
+            help="Required arrays: X_raw (N x features), y (N,), source_indices (N,).",
+        )
+        if st.button(
+            "Train separate comparison model",
+            disabled=augmented_file is None,
+            key=f"train_augmented_{dataset}_{model_name}",
+            type="secondary",
+        ):
+            try:
+                augmented_arrays, archive_digest = _read_augmented_training_archive(
+                    augmented_file.getvalue()
+                )
+                load_dataset(dataset)
+                train_arrays = get_train_arrays(dataset)
+                test_arrays = get_test_arrays(dataset)
+                dataset_meta = get_meta(dataset)
+                baseline_meta = getattr(baseline, "meta", {})
+                baseline_source_hash = baseline_meta.get("source_hash")
+                current_source_hash = dataset_meta.get("source_hash")
+                if (
+                    baseline_source_hash
+                    and current_source_hash
+                    and baseline_source_hash != current_source_hash
+                ):
+                    raise ValueError(
+                        "The loaded baseline was trained from a different dataset source. "
+                        "Refresh the baseline before comparing."
+                    )
+                if list(baseline.feature_names or []) != list(dataset_meta["feature_names"]):
+                    raise ValueError(
+                        "The loaded baseline feature order does not match the selected dataset."
+                    )
+                expected_scaler = StandardScaler().fit(train_arrays["X_raw"])
+                baseline_scaler = getattr(baseline, "scaler_", None)
+                if (
+                    baseline_scaler is None
+                    or not np.allclose(baseline_scaler.mean_, expected_scaler.mean_)
+                    or not np.allclose(baseline_scaler.scale_, expected_scaler.scale_)
+                ):
+                    raise ValueError(
+                        "The loaded baseline preprocessing does not match the current "
+                        "clean training split. Refresh the baseline before comparing."
+                    )
+                baseline_seed = int(getattr(baseline, "seed", 0))
+                baseline_epochs = getattr(baseline, "epochs", None)
+                training_epochs = int(baseline_epochs or 50)
+                training_batch_size = int(getattr(baseline, "batch_size", 256))
+                baseline_params = getattr(baseline, "model_params", {}) or None
+
+                with st.status("Training a separate augmented-data model...", expanded=True) as status:
+                    status.write("Validating source indices and inherited training labels...")
+                    status.write("Fitting preprocessing on clean training rows only...")
+                    augmented_artifact, augmented_metrics = train_augmented_and_save_model(
+                        dataset,
+                        model_name,
+                        train_arrays,
+                        augmented_arrays,
+                        test_arrays,
+                        dataset_meta,
+                        seed=baseline_seed,
+                        epochs=training_epochs,
+                        batch_size=training_batch_size,
+                        model_params=baseline_params,
+                        augmentation_sha256=archive_digest,
+                    )
+                    baseline_probs = baseline.predict_proba(test_arrays["X_raw"])
+                    baseline_metrics = compute_metrics(
+                        test_arrays["y"],
+                        np.argmax(baseline_probs, axis=1),
+                        baseline_probs,
+                    )
+                    baseline_scaler = getattr(baseline, "scaler_", None)
+                    defended_scaler = augmented_artifact["scaler"]
+                    preprocessing_matches = (
+                        baseline_scaler is None and defended_scaler is None
+                    ) or (
+                        baseline_scaler is not None
+                        and defended_scaler is not None
+                        and np.allclose(baseline_scaler.mean_, defended_scaler.mean_)
+                        and np.allclose(baseline_scaler.scale_, defended_scaler.scale_)
+                    )
+                    result = {
+                        "experiment": "clean_performance_after_supplied_training_augmentation",
+                        "dataset": dataset,
+                        "model": model_name,
+                        "baseline_metrics": baseline_metrics,
+                        "augmented_metrics": augmented_metrics,
+                        "training": {
+                            "strategy": "clean_plus_supplied_augmentations",
+                            "n_clean_train": int(len(train_arrays["y"])),
+                            "n_augmented_train": int(len(augmented_arrays["y"])),
+                            "seed": baseline_seed,
+                            "epochs": training_epochs if baseline.is_torch else None,
+                            "batch_size": training_batch_size if baseline.is_torch else None,
+                            "model_params": baseline_params or {},
+                            "augmentation_file_sha256": archive_digest,
+                            "dataset_source_hash": current_source_hash,
+                            "split_seed": dataset_meta.get("split_seed"),
+                            "preprocessing_matches_baseline": bool(preprocessing_matches),
+                        },
+                        "scope": (
+                            "Clean held-out evaluation only. This workflow does not "
+                            "generate or evaluate adversarial examples."
+                        ),
+                    }
+                    result_path.parent.mkdir(parents=True, exist_ok=True)
+                    with result_path.open("w", encoding="utf-8") as output:
+                        json.dump(result, output, indent=2, default=str)
+                    status.update(
+                        label="Separate model trained and clean-set evaluation saved",
+                        state="complete",
+                    )
+                st.success(
+                    f"Saved the separate model to "
+                    f"`artifacts/{dataset}_{model_name}_augmented.joblib`."
+                )
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                ImportError,
+                RuntimeError,
+                zipfile.BadZipFile,
+            ) as exc:
+                st.error(f"Augmented-data training failed: {exc}")
+
+        if result_path.is_file():
+            try:
+                with result_path.open(encoding="utf-8") as result_file:
+                    result = json.load(result_file)
+                st.markdown("### Clean held-out comparison")
+                render_clean_model_comparison(
+                    result["baseline_metrics"],
+                    result["augmented_metrics"],
+                )
+                if not result["training"]["preprocessing_matches_baseline"]:
+                    st.warning(
+                        "The preprocessing values differ from the loaded baseline "
+                        "artifact; interpret this comparison with that caveat."
+                    )
+                st.caption(
+                    f"Training rows: {result['training']['n_clean_train']:,} clean + "
+                    f"{result['training']['n_augmented_train']:,} supplied augmentations. "
+                    "No adversarial robustness evaluation is included."
+                )
+                with st.expander("Inspect comparison metadata"):
+                    st.json(result)
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                st.error(f"Could not read the saved clean comparison: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Tab: Setup
 # ---------------------------------------------------------------------------
 def render_setup():
-    st.subheader("Setup")
-    st.caption("Select a dataset and model to begin.")
+    first_visit = not st.session_state.get("_setup_intro_seen", False)
+    render_setup_hero(animate=first_visit)
+    st.session_state["_setup_intro_seen"] = True
 
     # Discover available datasets
     proc_dir = DATA_DIR / "processed"
@@ -219,20 +416,6 @@ def render_setup():
             name = f.name.replace("_test.npz", "")
             if name != "dummy":
                 available.append(name)
-
-    # CSV upload
-    uploaded = st.file_uploader(
-        "Upload a CSV dataset (CICIDS2017, UNSW-NB15, or custom)",
-        type=["csv"],
-        help="Upload a CSV with a label column ('Label', 'label', 'class', or 'target'). "
-             "Feature columns must be numeric. The app auto-detects and processes it."
-    )
-    if uploaded is not None:
-        ds_name = uploaded.name.replace(".csv", "")
-        new_ds = process_uploaded_csv(uploaded, ds_name)
-        if new_ds:
-            # Store in session state instead of rerun to avoid page flicker
-            st.session_state["uploaded_dataset"] = new_ds
 
     # Prefer CICIDS2017 when a trained real-data model is available.
     default_dataset = (
@@ -247,40 +430,102 @@ def render_setup():
         available = list(dict.fromkeys([uploaded_ds] + available))
         default_idx = available.index(uploaded_ds)
 
-    dataset = st.selectbox("Dataset", options=available, index=default_idx,
-                           help="Select a dataset. Uploaded CSVs appear here automatically.")
-    st.session_state["dataset"] = dataset
+    st.markdown(
+        '<div class="setup-section-heading setup-reveal">'
+        '<span>01</span><div><strong>Configure the clean baseline</strong>'
+        '<small>Data source and detector settings</small></div></div>',
+        unsafe_allow_html=True,
+    )
+    data_column, model_column = st.columns([1.08, 0.92], gap="large")
+    with data_column:
+        st.markdown(
+            '<div class="setup-control-panel setup-reveal">'
+            '<div class="setup-control-heading"><span class="control-index">A</span>'
+            '<div><strong>Traffic source</strong><small>Select prepared data or import a labeled CSV.</small></div></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        with st.container():
+            uploaded = st.file_uploader(
+                "Import a labeled CSV",
+                type=["csv"],
+                help="Expected a label, class, or target column and numeric feature columns."
+            )
+            if uploaded is not None:
+                ds_name = uploaded.name.replace(".csv", "")
+                new_ds = process_uploaded_csv(uploaded, ds_name)
+                if new_ds:
+                    st.session_state["uploaded_dataset"] = new_ds
 
-    # Show dataset info
+            dataset = st.selectbox(
+                "Prepared dataset",
+                options=available,
+                index=default_idx,
+                help="Uploaded CSV datasets appear here after processing.",
+            )
+            st.session_state["dataset"] = dataset
+
+    with model_column:
+        st.markdown(
+            '<div class="setup-control-panel setup-reveal">'
+            '<div class="setup-control-heading"><span class="control-index coral">B</span>'
+            '<div><strong>Detection model</strong><small>Choose the classifier for clean-set evaluation.</small></div></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        with st.container():
+            model_name = st.selectbox(
+                "Victim model",
+                ALL_MODELS,
+                index=0,
+                format_func=lambda name: {
+                    "lr": "Logistic Regression",
+                    "rf": "Random Forest",
+                    "xgb": "XGBoost",
+                    "mlp": "MLP",
+                    "cnn1d": "1D CNN",
+                    "ensemble": "Soft-voting ensemble (LR + RF + XGBoost)",
+                }.get(name, name),
+                help="The ensemble averages class probabilities from LR, RF, and XGBoost.",
+            )
+            epochs = st.number_input(
+                "Deep-model epochs",
+                min_value=1,
+                max_value=500,
+                value=50,
+                help="Used by MLP and 1D CNN. Sklearn models ignore this setting.",
+            )
+
     try:
-        arr = get_test_arrays(dataset)
-        y = arr["y"]
-        st.caption(f"🌐 {len(y)} test flows — Benign: {(y==0).sum()}, Attack: {(y==1).sum()}")
-    except Exception:
-        pass
+        dataset_arr = get_test_arrays(dataset)
+        dataset_meta = get_meta(dataset)
+        y = dataset_arr["y"]
+        render_dataset_profile(
+            dataset,
+            int(dataset_meta["n_features"]),
+            int(dataset_meta["n_train"]),
+            len(y),
+            int((y == BENIGN).sum()),
+            int((y == ATTACK).sum()),
+        )
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        st.warning(f"Dataset summary is unavailable: {exc}")
 
-    model_name = st.selectbox(
-        "Victim model",
-        ALL_MODELS,
-        index=0,
-        format_func=lambda name: {
-            "lr": "Logistic Regression",
-            "rf": "Random Forest",
-            "xgb": "XGBoost",
-            "mlp": "MLP",
-            "cnn1d": "1D CNN",
-            "ensemble": "Soft-voting ensemble (LR + RF + XGBoost)",
-        }.get(name, name),
-        help="The ensemble averages class probabilities from LR, RF, and XGBoost.",
+    st.markdown(
+        '<div class="train-ribbon setup-reveal"><div>'
+        '<span>02 / FIT THE DETECTOR</span><strong>Train on the training split.<br>'
+        'Measure only on held-out data.</strong>'
+        '<small>Model artifacts are saved locally. Clean-set diagnostics stay separate from the training process.</small>'
+        '</div></div>',
+        unsafe_allow_html=True,
     )
-    epochs = st.number_input(
-        "Deep-model epochs",
-        min_value=1,
-        max_value=500,
-        value=50,
-        help="Used by MLP and 1D CNN. Sklearn models ignore this setting.",
+    train_model = st.button(
+        "Train / refresh selected model",
+        type="primary",
+        use_container_width=True,
     )
-    if st.button("Train / refresh selected model", type="primary"):
+
+    if train_model:
         try:
             with st.status("Training model...", expanded=True) as status:
                 load_dataset(dataset)
@@ -316,12 +561,13 @@ def render_setup():
 
         m = vm.metrics
         if m:
-            st.markdown("**Clean-model performance**:")
-            cols = st.columns(4)
-            cols[0].metric("Accuracy", f"{m.get('accuracy', 0):.1%}")
-            cols[1].metric("F1", f"{m.get('f1', 0):.1%}")
-            cols[2].metric("Recall", f"{m.get('recall', 0):.1%}")
-            cols[3].metric("AUROC", f"{m.get('auroc', 0):.1%}")
+            st.markdown(
+                '<div class="setup-section-heading setup-reveal">'
+                '<span>03</span><div><strong>Clean-set diagnostics</strong>'
+                '<small>Observed performance on the existing held-out split</small></div></div>',
+                unsafe_allow_html=True,
+            )
+            render_clean_scoreboard(m)
     except FileNotFoundError as e:
         st.warning(str(e))
 
@@ -335,51 +581,57 @@ def render_setup():
             preds = np.argmax(probs, axis=1)
             metrics = compute_metrics(y_test, preds, probs)
 
-            # Confusion matrix
-            st.markdown("___")
-            st.markdown("**Confusion Matrix** (clean test set)")
-            tn, fp, fn, tp = metrics["tn"], metrics["fp"], metrics["fn"], metrics["tp"]
-            cm_df = pd.DataFrame(
-                [[tn, fp], [fn, tp]],
-                columns=["Pred Benign", "Pred Attack"],
-                index=["True Benign", "True Attack"],
-            )
-            st.dataframe(cm_df, use_container_width=True)
+            render_clean_diagnostics(metrics, key="setup_clean_cohort")
 
-            # Feature importance
             fns = vm.feature_names or []
             if hasattr(vm.base, "feature_importances_"):
                 imps = vm.base.feature_importances_
-                fi_df = pd.DataFrame({"feature": fns[:len(imps)], "importance": imps})
-                fi_df = fi_df.sort_values("importance", ascending=True).tail(15)
-                st.markdown("___")
-                st.markdown("**Top 15 Feature Importances** (tree-based)")
-                st.bar_chart(fi_df.set_index("feature"))
+                importance_label = "Tree-based importance"
             elif hasattr(vm.base, "coef_"):
                 imps = np.abs(vm.base.coef_[0])
-                fi_df = pd.DataFrame({"feature": fns[:len(imps)], "importance": imps})
-                fi_df = fi_df.sort_values("importance", ascending=True).tail(15)
-                st.markdown("___")
-                st.markdown("**Top 15 Feature Importances** (|coefficient|)")
+                importance_label = "Absolute model coefficients"
+            else:
+                imps = None
+                importance_label = ""
+
+            if imps is not None:
+                fi_df = pd.DataFrame({
+                    "feature": fns[:len(imps)],
+                    "importance": imps,
+                }).sort_values("importance", ascending=True).tail(15)
+                st.markdown("### Most influential features")
+                st.markdown(
+                    f'<p class="section-intro">{importance_label} · top 15.</p>',
+                    unsafe_allow_html=True,
+                )
                 st.bar_chart(fi_df.set_index("feature"))
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError) as exc:
+            st.warning(f"Model diagnostics could not be generated: {exc}")
 
-    st.markdown("---")
-    st.markdown("""
-**Research question this tab addresses**: Given an IDS that achieves ~99% F1 on clean
-data, does it break when an attacker slightly modifies network features?
+    if st.session_state.get("model_trained"):
+        render_augmented_training(
+            dataset,
+            model_name,
+            st.session_state["victim_model"],
+        )
 
-- **F1** — balance of precision and recall. 98% = very few false alarms or misses.
-- **AUROC** — model's ability to separate classes. 1.0 = perfect separation.
-""")
+    with st.expander("Why this baseline matters"):
+        st.markdown(
+            "A strong clean-data score does not guarantee robustness. "
+            "This baseline records performance on the held-out split before "
+            "testing whether small, constrained feature changes alter a prediction."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Tab: Attack Console
 # ---------------------------------------------------------------------------
 def render_attack():
-    st.subheader("Attack Console")
+    render_page_header(
+        "02 / Robustness probe",
+        "A small change.\nA different verdict?",
+        "Choose one held-out connection and compare the detector's judgment before and after a bounded adversarial perturbation.",
+    )
 
     if not st.session_state.get("model_trained"):
         st.info("Load a model in **Setup** first.")
@@ -394,10 +646,7 @@ def render_attack():
     feature_names = vm.feature_names
     mutable_mask = vm.mutable_mask
 
-    # --- Step 1: Pick a flow ---
-    st.markdown("**Step 1 — Pick a flow**: Select a network flow (a packet) to attack.")
-    st.caption("These are CICIDS-2017-style network flow records — each row is one connection "
-               "with 78 features like packet counts, byte counts, and timing info.")
+    st.markdown("**Step 1 — Pick a flow**: Select a network flow to inspect.")
     label_filter = st.radio("Show", ("All flows", "Attack flows only"),
                             horizontal=True,
                             help="Attack flows are the evasion targets.")
@@ -405,92 +654,44 @@ def render_attack():
     if label_filter == "Attack flows only":
         idxs = idxs[y == ATTACK]
 
-    idx = st.selectbox("Select flow", options=list(idxs),
-                        format_func=lambda i: f"#{i:04d} · {LABEL_NAMES[y[i]]} · {families[i]}",
-                        key="flow_idx")
+    if len(idxs) == 0:
+        st.warning("No flows match this filter in the selected test split.")
+        return
+
+    idx = st.selectbox(
+        "Select flow",
+        options=list(idxs),
+        format_func=lambda i: f"#{i:04d} · {LABEL_NAMES[y[i]]} · {families[i]}",
+        key="flow_idx",
+    )
     x_clean = X[idx:idx+1]
     true_label = int(y[idx])
     true_family = str(families[idx])
 
-    # --- Step 2: Clean prediction ---
-    st.markdown("---")
-    st.markdown("**Step 2 — Before attack**: The model classifies this flow.")
-
     probs_before = vm.predict_proba(x_clean)[0]
     pred_before = int(np.argmax(probs_before))
     conf_before = float(probs_before[1])  # P(attack)
+    st.markdown("**Step 2 — Before attack**: The model classifies this flow.")
+    render_prediction_card(
+        LABEL_NAMES[pred_before],
+        LABEL_NAMES[true_label],
+        conf_before,
+        true_family,
+    )
 
-    # Determine label colors
-    pred_color = "#f85149" if pred_before == ATTACK else "#2ecc71"
-    true_color = "#f85149" if true_label == ATTACK else "#2ecc71"
-    conf_color = "#06b7de" if conf_before < 0.5 else "#f85149"
-
-    st.markdown("""<style>
-.pred-card{border-radius:12px;padding:20px;margin:8px 0;
-  border:1px solid #334155;background:#1e2229}
-.pred-badge{display:inline-block;border-radius:8px;padding:6px 16px;
-  font-weight:700;font-size:1.1em;margin:4px}
-.badge-attack{background:rgba(248,81,73,0.2);color:#f85149;border:1px solid #f85149}
-.badge-bening{background:rgba(46,204,113,0.2);color:#2ecc71;border:1px solid #2ecc71}
-.conf-row{display:flex;align-items:center;gap:8px;margin:6px 0}
-.conf-label{width:80px;color:#94a3b8;font-size:0.85em}
-.conf-bar{flex:1;background:#334155;border-radius:4px;height:12px;overflow:hidden}
-.conf-fill{height:100%;border-radius:4px;transition:width 0.3s}
-</style>""", unsafe_allow_html=True)
-
-    # Prediction card
-    st.markdown(f"""
-    <div class="pred-card">
-      <div class="conf-row">
-        <span class="conf-label">Prediction</span>
-        <span class="pred-badge {'badge-attack' if pred_before == 1 else 'badge-bening'}">
-          {LABEL_NAMES[pred_before]}
-        </span>
-      </div>
-      <div class="conf-row">
-        <span class="conf-label">Confidence</span>
-        <div class="conf-bar">
-          <div class="conf-fill" style="width:{conf_before*100:.1f}%;background:{conf_color}"></div>
-        </div>
-        <span style="color:{conf_color};font-weight:600">{conf_before:.4f}</span>
-      </div>
-      <div class="conf-row">
-        <span class="conf-label">True label</span>
-        <span class="pred-badge {'badge-attack' if true_label == 1 else 'badge-bening'}">
-          {LABEL_NAMES[true_label]}
-        </span>
-      </div>
-      <div class="conf-row">
-        <span class="conf-label">Attack family</span>
-        <span style="color:#cbd5e1">{true_family}</span>
-      </div>
-    </div>""", unsafe_allow_html=True)
-
-    st.caption("**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
-               "**PGD** = iterates FGSM with projection. "
-               "**CW** = finds minimal perturbation via optimization. "
-               "**ε** = max perturbation per feature.")
-
-    # --- Step 3: Attack ---
-    st.markdown("---")
-    st.markdown("**Step 3 — Launch attack**: Perturb features to flip the prediction.")
-    st.caption("**FGSM** = one shot: nudge each feature by ε × sign(gradient). "
-               "**PGD** = iterates FGSM multiple times with projection. "
-               "**CW** = Carlini-Wagner optimization — finds the smallest perturbation. "
-               "**ε** = max perturbation per feature (controls how much the features can change).")
-
+    st.markdown("**Step 3 — Configure attack**: Select an attack and perturbation budget.")
     col_a, col_b = st.columns(2)
     with col_a:
         method = st.radio("Attack method", ("FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"),
                           horizontal=True,
                           help="**FGSM** = single-step gradient sign. **PGD** = iterative projected gradient. "
-                               "**CW** = optimization-based (smallest perturbation). **DeepFool** = boundary distance estimation. "
-                               "**JSMA** = Jacobian-based saliency (sparse perturbation). **NES** = black-box zeroth-order (no gradients).")
+                               "**CW** = optimization-based. **DeepFool** = boundary distance estimation. "
+                               "**JSMA** = saliency-based. **NES** = black-box zeroth-order.")
         attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw, "DeepFool": deepfool,
                      "JSMA": jsma, "NES": nes_attack}[method]
     with col_b:
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
-                               help="Max allowed perturbation per feature. Higher = stronger attack.")
+                               help="Maximum allowed perturbation per feature.")
 
     # Reset attacking flag on each render to avoid stuck state from prior crashes
     st.session_state.pop("_attacking", None)
@@ -503,7 +704,7 @@ def render_attack():
             with st.status(f"Running {method} attack (ε={eps})...",
                            expanded=True) as status:
                 st.markdown('<div class="loader-container"><div class="loader"></div>'
-                            f'<p style="color:#06b7de">Perturbing network flow features...</p></div>',
+                            '<p>Perturbing network-flow features...</p></div>',
                             unsafe_allow_html=True)
                 result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
                 x_adv = result.x_adv  # AttackResult -> raw ndarray
@@ -537,7 +738,7 @@ def render_attack():
 
     r = st.session_state.get("result")
     if not r:
-        st.caption("Pick a flow and click 'Run attack' to see the evasion.")
+        st.caption("Pick a flow and click 'Run attack' to see the result.")
         return
 
     # --- Results ---
@@ -545,41 +746,38 @@ def render_attack():
     st.subheader("Result — what happened?")
 
     if r["evasion"]:
-        st.error("**Evasion succeeded** — the model now thinks this attack is benign!\n"
-                 f"P(attack): {r['probs_before']['attack']:.4f} → {r['probs_after']['attack']:.4f}",
-                 icon="🔴")
+        st.error("**Evasion succeeded** — the model now classifies this attack as benign.\n"
+                 f"P(attack): {r['probs_before']['attack']:.4f} → {r['probs_after']['attack']:.4f}")
     elif not r["valid"]:
-        st.warning(f"Invalid — {len(r['violations'])} constraint violations",
-                   icon="⚠")
+        st.warning(f"Invalid — {len(r['violations'])} constraint violations")
     else:
-        st.success(f"Blocked — model still says {r['label_after']}",
-                   icon="🟢")
+        st.success(f"Blocked — model still says {r['label_after']}")
 
-    st.markdown("---")
     st.markdown("**After attack — model's new prediction**")
     col_e, col_f, col_g = st.columns(3)
     col_e.metric("Before", f"P(attack) = {r['probs_before']['attack']:.4f}")
     col_f.metric("After", f"P(attack) = {r['probs_after']['attack']:.4f}")
     col_g.metric("Status", r["msg"])
 
-    # Perturbation cost
-    st.markdown("---")
-    st.markdown("**How much did we change the packet?**")
-    st.caption("**L1** = average total change across all features. **L∞** = the single "
-               "biggest change to any one feature. These tell you how much the attacker "
-               "had to distort the packet to fool the model.")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("L1 norm", f"{r['l1']:.4f}", help="Sum of |changes| across all features")
-    c2.metric("L∞ norm", f"{r['linf']:.4f}", help="Largest single-feature change")
-    c3.metric("Queries", f"{r.get('queries', 0)}", help="Model evaluations used by the attack")
+    st.markdown("### Perturbation cost")
+    st.markdown(
+        '<p class="section-intro">L1 summarizes total feature movement; L∞ is the largest '
+        'single-feature change. Query count records model evaluations used by the method.</p>',
+        unsafe_allow_html=True,
+    )
+    render_metric_cards([
+        ("L1 norm", f"{r['l1']:.4f}", "Total absolute change"),
+        ("L∞ norm", f"{r['linf']:.4f}", "Largest feature change"),
+        ("Queries", f"{r.get('queries', 0):,}", "Model evaluations"),
+    ])
 
     # Validity + behaviour checks
-    st.markdown("---")
-    st.markdown("**Did the attack play by the rules?**")
-    st.caption("**Validity** = did we stay within allowed bounds? (no negative packet counts, "
-               "immutable fields unchanged, perturbation ≤ ε)")
-    st.caption("**Behaviour** = did we preserve the malicious semantics? (the packet "
-               "is still fundamentally an attack, just perturbed)")
+    st.markdown("### Constraint checks")
+    st.markdown(
+        '<p class="section-intro">Validity checks enforce feature bounds, immutability, and '
+        'the epsilon budget; behavior checks compare the prediction before and after.</p>',
+        unsafe_allow_html=True,
+    )
     cols = st.columns(2)
     with cols[0]:
         icon = "✅" if r["valid"] else "❌"
@@ -605,9 +803,9 @@ def render_attack():
         def color_delta(val):
             if isinstance(val, (int, float)):
                 if val > 0:
-                    return "color: #06b7de"
+                    return "color: #4059d9"
                 elif val < 0:
-                    return "color: #f56565"
+                    return "color: #df624e"
             return ""
         styled = diff_df.style.map(color_delta, subset=["delta"])
         st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -630,46 +828,180 @@ def render_attack():
 # Tab: Results Gallery
 # ---------------------------------------------------------------------------
 def render_gallery():
-    st.subheader("Results Gallery")
+    render_page_header(
+        "03 / Clean-set evidence",
+        "Understand the results.",
+        "Compare real held-out scores, see exactly what each model gets wrong, and find any saved clean-set comparison from supplied training augmentations.",
+    )
     dataset = st.session_state.get("dataset", "dummy")
 
     e1_path = RESULTS_DIR / "E1" / f"{dataset}_clean_metrics.json"
     if e1_path.exists():
-        with st.expander("Clean model metrics (E1)"):
-            data = json.load(open(e1_path))
-            st.json(data)
+        st.markdown("### Clean model evaluation")
+        try:
+            with e1_path.open(encoding="utf-8") as result_file:
+                data = json.load(result_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            st.error(f"Could not read the clean-metrics result: {exc}")
+        else:
+            required_scores = ("accuracy", "f1", "recall", "auroc")
+            model_results = {
+                model: metrics
+                for model, metrics in data.items()
+                if isinstance(data, dict)
+                and isinstance(model, str)
+                and isinstance(metrics, dict)
+                and all(
+                    isinstance(metrics.get(name), (int, float))
+                    and not isinstance(metrics.get(name), bool)
+                    and np.isfinite(metrics[name])
+                    and 0 <= metrics[name] <= 1
+                    for name in required_scores
+                )
+            } if isinstance(data, dict) else {}
 
-    st.info("Run batch experiments to generate E2 (FGSM ASR) and E3 (PGD ASR):\n```\n"
-            "python -m nids.experiments --e2 --e3\n```")
-    st.markdown("""
-**Research questions answered by batch experiments:**
-- **RQ1** — Which model architectures are most vulnerable? Compare ASR across LR/RF/XGB/MLP/CNN1D
-- **RQ2** — Which features are most susceptible? The feature diff table + gradient chart show this
-- **RQ3** — Can adversarial training help? Run E8 to find out
-""")
+            if model_results:
+                st.markdown("#### Compare the models")
+                animation_key = f"_results_landscape_seen_{dataset}"
+                render_clean_model_landscape(
+                    model_results,
+                    animate=not st.session_state.get(animation_key, False),
+                )
+                st.session_state[animation_key] = True
+                model_options = sorted(model_results)
+                highest_f1_model = max(
+                    model_options,
+                    key=lambda model: float(model_results[model]["f1"]),
+                )
+                selected_model = st.selectbox(
+                    "Inspect one model's detailed outcome",
+                    options=model_options,
+                    index=model_options.index(highest_f1_model),
+                    key=f"gallery_clean_model_{dataset}",
+                )
+                selected_metrics = model_results[selected_model]
+                render_clean_scoreboard(selected_metrics)
+                if all(
+                    isinstance(selected_metrics.get(name), int)
+                    and not isinstance(selected_metrics.get(name), bool)
+                    and selected_metrics[name] >= 0
+                    for name in ("tn", "fp", "fn", "tp")
+                ):
+                    render_clean_diagnostics(
+                        selected_metrics,
+                        key=f"gallery_clean_cohort_{dataset}",
+                    )
+                else:
+                    st.info("This result contains no complete confusion counts for a class-level breakdown.")
+            else:
+                st.warning("This file does not match the expected model-to-clean-metrics structure.")
+
+            with st.expander("Inspect raw E1 result data"):
+                st.json(data)
+    else:
+        st.info(
+            f"No clean-metric result is available for **{dataset}** yet. "
+            "Train and evaluate a model to create the E1 artifact."
+        )
+
+    st.markdown("### Training with supplied augmentations")
+    augmented_result_files = sorted(
+        (RESULTS_DIR / "E9").glob(f"{dataset}_*_augmented_comparison.json")
+    )
+    if augmented_result_files:
+        result_by_model = {}
+        for result_file in augmented_result_files:
+            try:
+                with result_file.open(encoding="utf-8") as file:
+                    result = json.load(file)
+                model = result.get("model")
+                if (
+                    isinstance(model, str)
+                    and _has_comparison_metrics(result.get("baseline_metrics"))
+                    and _has_comparison_metrics(result.get("augmented_metrics"))
+                    and isinstance(result.get("training"), dict)
+                ):
+                    result_by_model[model] = result
+                else:
+                    st.warning(f"Unsupported comparison schema in {result_file.name}.")
+            except (OSError, json.JSONDecodeError) as exc:
+                st.error(f"Could not read {result_file.name}: {exc}")
+
+        if result_by_model:
+            comparison_model = st.selectbox(
+                "Model comparison",
+                options=sorted(result_by_model),
+                key=f"augmented_result_model_{dataset}",
+            )
+            comparison = result_by_model[comparison_model]
+            render_clean_model_comparison(
+                comparison["baseline_metrics"],
+                comparison["augmented_metrics"],
+            )
+            training = comparison["training"]
+            st.caption(
+                f"{training['n_clean_train']:,} clean training rows + "
+                f"{training['n_augmented_train']:,} supplied augmentations. "
+                "This is a clean-test comparison, not an adversarial robustness result."
+            )
+            with st.expander("Inspect comparison metadata"):
+                st.json(comparison)
+        else:
+            st.warning("Comparison files exist, but none contain a supported clean-set result.")
+    else:
+        st.html(
+            """
+            <section class="augmentation-empty-state">
+              <p class="comparison-kicker">NO SAVED COMPARISON YET</p>
+              <h3>Run the supplied-data training workflow to see it here.</h3>
+              <ol>
+                <li>Open <strong>Model Setup</strong> and load or train the baseline for this dataset.</li>
+                <li>Expand <strong>Train a separate model from supplied training augmentations</strong>.</li>
+                <li>Upload an NPZ with <code>X_raw</code>, <code>y</code>, and <code>source_indices</code>, then train.</li>
+              </ol>
+              <p>The comparison uses the same clean held-out test set. It does not generate augmentations or measure adversarial robustness.</p>
+            </section>
+            """
+        )
+
+    st.markdown("### Generate batch results")
+    st.markdown(
+        '<p class="section-intro">Run experiments locally to populate attack-success '
+        'curves and other result artifacts.</p>',
+        unsafe_allow_html=True,
+    )
+    st.code("python -m nids.experiments --e2 --e3", language="bash")
+    with st.expander("Research questions"):
+        st.markdown(
+            "- **RQ1** — Which model architectures are most vulnerable?\n"
+            "- **RQ2** — Which features are most susceptible? Inspect feature changes and gradients.\n"
+            "- **RQ3** — Can adversarial training improve robustness? Compare the supported experiments."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Tab: About
 # ---------------------------------------------------------------------------
 def render_about():
-    st.subheader("About")
+    render_page_header(
+        "04 / Research notes",
+        "Robustness is a property to test.",
+        "A reproducible research console for studying adversarial evasion in network intrusion detection.",
+    )
     st.markdown("""
-**Adversarial NIDS Evasion Console** — adversarial ML for network intrusion detection.
+### Research question
+Can a malicious network flow be perturbed within realistic constraints so that an
+intrusion-detection model classifies it as benign?
 
-**The research problem**: Your IDS catches 98% of attacks. But what if an attacker
-slightly tweaks their network packet features — without changing the malicious
-intent — so the model misclassifies it as benign?
-
-**Architecture (6 layers)**:
+### Architecture
 1. **config** — frozen seeds, epsilon grid, label convention
-2. **data** — CICIDS-2017 / UNSW-NB15 network flow features
+2. **data** — CICIDS2017 / UNSW-NB15 network-flow features
 3. **models** — LR, RF, XGBoost, MLP, CNN1D, and their soft-voting LR/RF/XGBoost ensemble
 4. **attacks** — FGSM, PGD, CW, DeepFool, JSMA (white-box), NES (black-box), projection
 5. **eval** — metrics (F1, AUROC, FPR), validity checks, transfer matrix
 6. **dashboard** — this UI
 
-**Key terms**:
+### Key terms
 - **Epsilon (ε)**: max perturbation per feature. Controls attack strength.
 - **FGSM**: nudge each feature by ε × sign(gradient) — one shot.
 - **PGD**: iterate FGSM with projection — stronger than FGSM.
@@ -681,6 +1013,7 @@ intent — so the model misclassifies it as benign?
 - **Evasion**: attack succeeded — malicious packet classified as benign.
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
 """)
+    st.markdown("### Train models")
     st.code(
         "python -m scripts.pretrain --dataset cicids2017 "
         "--models lr rf xgb mlp cnn1d ensemble",
@@ -697,17 +1030,39 @@ intent — so the model misclassifies it as benign?
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    st.title("Adversarial NIDS Evasion Console")
-    st.caption("Attack a pre-trained NIDS with FGSM, PGD, or CW. Load a model in Setup, attack in the console.")
-
     if "model_trained" not in st.session_state:
         st.session_state["model_trained"] = False
 
-    tabs = st.tabs(["Setup", "Attack Console", "Results Gallery", "About"])
-    with tabs[0]: render_setup()
-    with tabs[1]: render_attack()
-    with tabs[2]: render_gallery()
-    with tabs[3]: render_about()
+    with st.sidebar:
+        st.markdown(
+            '<div class="brand-lockup">'
+            '<p class="eyebrow">RESEARCH CONSOLE</p>'
+            '<strong>Adversarial NIDS</strong>'
+            '<p>Network detection robustness</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
+        st.markdown(
+            '<p class="sidebar-nav-label">Navigate</p>',
+            unsafe_allow_html=True,
+        )
+        workspace = st.radio(
+            "Workspace",
+            ("Model setup", "Attack console", "Results gallery", "About"),
+            key="active_workspace",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+
+    if workspace == "Model setup":
+        render_setup()
+    elif workspace == "Attack console":
+        render_attack()
+    elif workspace == "Results gallery":
+        render_gallery()
+    else:
+        render_about()
 
 
 if __name__ == "__main__":

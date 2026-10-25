@@ -20,7 +20,8 @@ results/
 figures/
 
 # Streamlit
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 
 # IDE
 .idea/
