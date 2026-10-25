@@ -3,6 +3,7 @@
 from html import escape
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 STYLES_PATH = Path(__file__).resolve().parent / "styles.css"
@@ -56,7 +57,7 @@ def render_prediction_card(
     """Show the clean prediction and its confidence without trusting data as HTML."""
     prediction_class = "badge-attack" if prediction == "attack" else "badge-benign"
     true_class = "badge-attack" if true_label == "attack" else "badge-benign"
-    confidence_color = "#df624e" if attack_confidence >= 0.5 else "#4059d9"
+    confidence_color = "#ff9e92" if attack_confidence >= 0.5 else "#70dcff"
     st.markdown(
         f"""
         <section class="pred-card" aria-label="Clean model prediction">
@@ -269,6 +270,74 @@ def render_clean_model_landscape(
         </section>
         """
     )
+
+
+def render_results_overview(dataset: str, model_results: dict[str, dict]) -> None:
+    """Summarize the real clean-test result set and its highest-F1 model."""
+    best_model, best_metrics = max(
+        model_results.items(),
+        key=lambda item: float(item[1]["f1"]),
+    )
+    first_metrics = next(iter(model_results.values()))
+    confusion_counts = ("tn", "fp", "fn", "tp")
+    held_out_count = (
+        sum(first_metrics[name] for name in confusion_counts)
+        if all(_is_nonnegative_count(first_metrics.get(name)) for name in confusion_counts)
+        else None
+    )
+    held_out_text = f"{held_out_count:,}" if held_out_count is not None else "—"
+    st.html(
+        f"""
+        <section class="results-orbit" aria-label="Clean-set results overview">
+          <div class="results-orbit-copy">
+            <p class="comparison-kicker">CLEAN TEST / MODEL FIELD</p>
+            <h2>{escape(dataset.replace("_", " ").upper())}</h2>
+            <p>Actual measurements from the saved held-out evaluation.</p>
+          </div>
+          <div class="results-orbit-score" role="img"
+               aria-label="Top F1 score: {float(best_metrics["f1"]):.4%}, model {escape(best_model)}">
+            <span>{float(best_metrics["f1"]):.2%}</span>
+            <small>TOP F1 · {escape(best_model.replace("_", " ").upper())}</small>
+          </div>
+          <div class="results-orbit-stats">
+            <div><strong>{len(model_results):02}</strong><span>models compared</span></div>
+            <div><strong>{held_out_text}</strong><span>held-out records</span></div>
+          </div>
+        </section>
+        """
+    )
+
+
+def render_clean_metric_chart(model_results: dict[str, dict]) -> None:
+    """Plot four saved clean-set scores per model on a shared 0–100 scale."""
+    score_names = {
+        "F1": "f1",
+        "Precision": "precision",
+        "Recall": "recall",
+        "AUROC": "auroc",
+    }
+    scores = pd.DataFrame(
+        {
+            label: {
+                model.replace("_", " ").upper(): float(metrics[name]) * 100
+                for model, metrics in model_results.items()
+                if isinstance(metrics.get(name), (int, float))
+                and not isinstance(metrics.get(name), bool)
+                and 0 <= metrics[name] <= 1
+            }
+            for label, name in score_names.items()
+        }
+    )
+    if scores.empty:
+        st.info("There are no comparable clean-set score values to chart.")
+        return
+    with st.container(border=True):
+        st.markdown("#### Clean-set quality by model")
+        st.caption(
+            "Grouped bars compare F1, precision, recall, and AUROC for each model. "
+            "All use the same 0–100% scale; hover over a bar for its exact value."
+        )
+        st.bar_chart(scores, height=360, stack=False)
 
 
 def _landscape_rate_bar(label: str, value: float, color: str) -> str:

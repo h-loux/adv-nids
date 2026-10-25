@@ -32,6 +32,8 @@ from dashboard.ui import (
     render_clean_model_comparison,
     render_clean_diagnostics,
     render_clean_model_landscape,
+    render_results_overview,
+    render_clean_metric_chart,
 )
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
@@ -189,6 +191,36 @@ def load_model(dataset: str, model_name: str):
 @st.cache_resource
 def load_data(dataset):
     return get_test_arrays(dataset), get_meta(dataset)
+
+
+def _has_confusion_counts(metrics) -> bool:
+    """Return whether saved metrics can directly render the clean confusion matrix."""
+    return isinstance(metrics, dict) and all(
+        isinstance(metrics.get(name), (int, np.integer))
+        and not isinstance(metrics.get(name), (bool, np.bool_))
+        and metrics[name] >= 0
+        for name in ("tn", "fp", "fn", "tp")
+    )
+
+
+@st.cache_data
+def _compute_clean_metrics(dataset: str, model_name: str, artifact_modified_ns: int) -> dict:
+    """Compute clean diagnostics once for older artifacts without saved metrics."""
+    vm = load_model(dataset, model_name)
+    arrays, _ = load_data(dataset)
+    probabilities = vm.predict_proba(arrays["X_raw"])
+    predictions = np.argmax(probabilities, axis=1)
+    return compute_metrics(arrays["y"], predictions, probabilities)
+
+
+def _clean_diagnostics_metrics(vm, dataset: str, model_name: str) -> dict:
+    """Prefer the held-out metrics saved with the model over rerunning inference."""
+    metrics = vm.metrics
+    if _has_confusion_counts(metrics):
+        return metrics
+
+    artifact_path = ARTIFACTS_DIR / f"{dataset}_{model_name}.joblib"
+    return _compute_clean_metrics(dataset, model_name, artifact_path.stat().st_mtime_ns)
 
 
 def _read_augmented_training_archive(contents: bytes) -> tuple[dict, str]:
@@ -575,12 +607,7 @@ def render_setup():
     if st.session_state.get("model_trained"):
         vm = st.session_state["victim_model"]
         try:
-            arr, _ = load_data(dataset)
-            X_test, y_test = arr["X_raw"], arr["y"]
-            probs = vm.predict_proba(X_test)
-            preds = np.argmax(probs, axis=1)
-            metrics = compute_metrics(y_test, preds, probs)
-
+            metrics = _clean_diagnostics_metrics(vm, dataset, model_name)
             render_clean_diagnostics(metrics, key="setup_clean_cohort")
 
             fns = vm.feature_names or []
@@ -605,7 +632,7 @@ def render_setup():
                     unsafe_allow_html=True,
                 )
                 st.bar_chart(fi_df.set_index("feature"))
-        except (KeyError, ValueError, AttributeError) as exc:
+        except (OSError, KeyError, ValueError, AttributeError, RuntimeError) as exc:
             st.warning(f"Model diagnostics could not be generated: {exc}")
 
     if st.session_state.get("model_trained"):
@@ -803,9 +830,9 @@ def render_attack():
         def color_delta(val):
             if isinstance(val, (int, float)):
                 if val > 0:
-                    return "color: #4059d9"
+                    return "color: #70dcff"
                 elif val < 0:
-                    return "color: #df624e"
+                    return "color: #ff9e92"
             return ""
         styled = diff_df.style.map(color_delta, subset=["delta"])
         st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -862,6 +889,8 @@ def render_gallery():
 
             if model_results:
                 st.markdown("#### Compare the models")
+                render_results_overview(dataset, model_results)
+                render_clean_metric_chart(model_results)
                 animation_key = f"_results_landscape_seen_{dataset}"
                 render_clean_model_landscape(
                     model_results,

@@ -69,3 +69,57 @@ def test_clean_model_comparison_renders_paired_rates_and_counts(monkeypatch):
 def test_small_rates_are_not_rounded_to_zero():
     assert ui._format_rate(0.000018) == "0.0018%"
     assert ui._format_percentage_points(-0.0009) == "-0.0009 pp"
+
+
+def test_results_overview_uses_best_model_and_actual_held_out_counts(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(ui.st, "html", rendered.append)
+    model_results = {
+        "lr": {"f1": 0.80, "tn": 70, "fp": 10, "fn": 15, "tp": 105},
+        "rf": {"f1": 0.94, "tn": 78, "fp": 2, "fn": 6, "tp": 114},
+    }
+
+    ui.render_results_overview("test_network", model_results)
+
+    overview = rendered[0]
+    assert "TEST NETWORK" in overview
+    assert "94.00%" in overview
+    assert "RF" in overview
+    assert ">200</strong>" in overview
+    assert "role=\"img\"" in overview
+
+
+def test_clean_metric_chart_passes_actual_model_scores_to_streamlit(monkeypatch):
+    rendered_charts = []
+    monkeypatch.setattr(
+        ui.st,
+        "bar_chart",
+        lambda data, **kwargs: rendered_charts.append((data, kwargs)),
+    )
+    monkeypatch.setattr(ui.st, "container", lambda **kwargs: _ChartContainer(kwargs))
+    monkeypatch.setattr(ui.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    model_results = {
+        "lr": {"f1": 0.8, "precision": 0.75, "recall": 0.86, "auroc": 0.93},
+        "rf": {"f1": 0.94, "precision": 0.96, "recall": 0.92, "auroc": 0.98},
+    }
+
+    ui.render_clean_metric_chart(model_results)
+
+    chart_data, chart_options = rendered_charts[0]
+    assert chart_data.loc["LR", "F1"] == 80
+    assert chart_data.loc["RF", "Precision"] == 96
+    assert chart_data.loc["RF", "Recall"] == 92
+    assert chart_data.loc["RF", "AUROC"] == 98
+    assert chart_options == {"height": 360, "stack": False}
+
+
+class _ChartContainer:
+    def __init__(self, options):
+        self.options = options
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
