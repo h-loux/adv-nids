@@ -727,11 +727,13 @@ def render_attack():
                  disabled=st.session_state.get("_attacking", False),
                  key="run_attack_btn"):
         st.session_state["_attacking"] = True
+        # Never leave a previous run's output visible if this run fails.
+        st.session_state.pop("result", None)
         try:
-            with st.status(f"Running {method} attack (ε={eps})...",
+            with st.status(f"Running {method} (ε={eps})...",
                            expanded=True) as status:
                 st.markdown('<div class="loader-container"><div class="loader"></div>'
-                            '<p>Perturbing network-flow features...</p></div>',
+                            '<p>Evaluating the selected robustness experiment...</p></div>',
                             unsafe_allow_html=True)
                 result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
                 x_adv = result.x_adv  # AttackResult -> raw ndarray
@@ -758,8 +760,13 @@ def render_attack():
                     mutable_mask=mutable_mask, feature_names=feature_names,
                     eps=eps, method=method, queries=queries,
                 )
-                status.update(label=f"✓ {method} attack complete", state="complete",
+                status.update(label=f"✓ {method} evaluation complete", state="complete",
                               expanded=False)
+        except Exception as exc:
+            # Surface the actual failure rather than silently retaining stale results.
+            st.error(
+                f"{method} did not complete ({type(exc).__name__}): {exc}"
+            )
         finally:
             st.session_state["_attacking"] = False
 
