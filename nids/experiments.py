@@ -17,12 +17,12 @@ from pathlib import Path
 
 import numpy as np
 
-from nids.config import BENIGN, EPS_GRID, LABEL_NAMES, ALL_MODELS as SUPPORTED_MODELS
-from nids.data import get_meta, get_test_arrays
-from nids.models import make_model
+from nids.config import BENIGN, EPS_GRID, ALL_MODELS as SUPPORTED_MODELS
+from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.attacks import fgsm, pgd, cw
 from nids.attacks.result import AttackResult
 from nids.eval.metrics import compute_metrics
+from nids.training import fit_model
 from nids.eval.validity import (
     check_validity,
 )
@@ -31,40 +31,13 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 def train_model_for_dataset(dataset, model_name, seed=42):
-    """Train a VictimModel for the given dataset and model."""
+    """Train from the train split and return the untouched test split."""
+    load_dataset(dataset)
     meta = get_meta(dataset)
-    arr = get_test_arrays(dataset)
-    X, y = arr["X_raw"], arr["y"]
-    vm = make_model(model_name, X.shape[1])
-
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.model_selection import train_test_split
-    np.random.seed(seed)
-    X_tr, _, y_tr, _ = train_test_split(X, y, test_size=0.2, random_state=seed, stratify=y)
-    scaler = StandardScaler().fit(X_tr)
-    vm.set_scaler(scaler)
-    vm.meta = meta  # for validity checks and attack constraints
-
-    if vm.is_torch:
-        import torch
-        torch.manual_seed(seed)
-        X_s = scaler.transform(X_tr)
-        ds = torch.utils.data.TensorDataset(
-            torch.as_tensor(X_s, dtype=torch.float32),
-            torch.as_tensor(y_tr, dtype=torch.long))
-        loader = torch.utils.data.DataLoader(ds, batch_size=256, shuffle=True)
-        opt = torch.optim.Adam(vm.base.parameters(), lr=1e-3)
-        crit = torch.nn.CrossEntropyLoss()
-        vm.base.train()
-        for ep in range(100):
-            for xb, yb in loader:
-                opt.zero_grad()
-                crit(vm.base(xb), yb).backward()
-                opt.step()
-    else:
-        vm.base.fit(scaler.transform(X_tr), y_tr)
-
-    return vm, arr, meta
+    train = get_train_arrays(dataset)
+    test = get_test_arrays(dataset)
+    vm = fit_model(model_name, train, meta, seed=seed)
+    return vm, test, meta
 
 
 def run_clean(dataset, models):
@@ -81,7 +54,8 @@ def run_clean(dataset, models):
         print(f"  {m}: F1={metrics['f1']:.4f} AUROC={metrics['auroc']:.4f}")
     out = RESULTS_DIR / "E1" / f"{dataset}_clean_metrics.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(results, open(out, "w"), indent=2)
+    with open(out, "w", encoding="utf-8") as output:
+        json.dump(results, output, indent=2)
     print(f"  -> {out}")
     return results
 
@@ -128,7 +102,8 @@ def run_attack(dataset, models, attack_fn, eps_list, attack_name):
     exp_dir = dir_map.get(attack_name, "E2")
     out = RESULTS_DIR / exp_dir / f"{dataset}_{attack_name}_asr.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(results, open(out, "w"), indent=2)
+    with open(out, "w", encoding="utf-8") as output:
+        json.dump(results, output, indent=2)
     print(f"  -> {out}")
     return results
 

@@ -6,7 +6,7 @@ network flows with FGSM, PGD, or Carlini-Wagner.
 Run:  streamlit run dashboard/app.py
 """
 import json
-from io import StringIO
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -14,9 +14,14 @@ import pandas as pd
 import streamlit as st
 from sklearn.preprocessing import StandardScaler
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
-from nids.data import get_meta, get_test_arrays
+from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.models import VictimModel
+from nids.training import train_and_save_model
 from nids.attacks import fgsm, pgd, cw, deepfool, jsma, nes_attack
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
@@ -229,8 +234,14 @@ def render_setup():
             # Store in session state instead of rerun to avoid page flicker
             st.session_state["uploaded_dataset"] = new_ds
 
-    # Determine default dataset index
-    default_idx = 0
+    # Prefer CICIDS2017 when a trained real-data model is available.
+    default_dataset = (
+        "cicids2017"
+        if "cicids2017" in available
+        and any(ARTIFACTS_DIR.glob("cicids2017_*.joblib"))
+        else "dummy"
+    )
+    default_idx = available.index(default_dataset)
     uploaded_ds = st.session_state.get("uploaded_dataset")
     if uploaded_ds and uploaded_ds in available:
         available = list(dict.fromkeys([uploaded_ds] + available))
@@ -248,10 +259,55 @@ def render_setup():
     except Exception:
         pass
 
-    model_name = st.selectbox("Victim model", ALL_MODELS, index=0,
-                              help="LR — fast, interpretable. RF/XGB — strong baselines. "
-                                   "MLP/CNN1D — deep models, harder to attack.")
+    model_name = st.selectbox(
+        "Victim model",
+        ALL_MODELS,
+        index=0,
+        format_func=lambda name: {
+            "lr": "Logistic Regression",
+            "rf": "Random Forest",
+            "xgb": "XGBoost",
+            "mlp": "MLP",
+            "cnn1d": "1D CNN",
+            "ensemble": "Soft-voting ensemble (LR + RF + XGBoost)",
+        }.get(name, name),
+        help="The ensemble averages class probabilities from LR, RF, and XGBoost.",
+    )
+    epochs = st.number_input(
+        "Deep-model epochs",
+        min_value=1,
+        max_value=500,
+        value=50,
+        help="Used by MLP and 1D CNN. Sklearn models ignore this setting.",
+    )
+    if st.button("Train / refresh selected model", type="primary"):
+        try:
+            with st.status("Training model...", expanded=True) as status:
+                load_dataset(dataset)
+                st.write("Loading the train and held-out test splits...")
+                train_arrays = get_train_arrays(dataset)
+                test_arrays = get_test_arrays(dataset)
+                meta = get_meta(dataset)
+                st.write(f"Fitting on {len(train_arrays['y']):,} training flows...")
+                _, trained_metrics = train_and_save_model(
+                    dataset,
+                    model_name,
+                    train_arrays,
+                    test_arrays,
+                    meta,
+                    epochs=int(epochs),
+                )
+                status.update(label="Training and test evaluation complete", state="complete")
+            load_model.clear()
+            st.success(
+                f"Saved `{dataset}_{model_name}`. "
+                f"Test F1: {trained_metrics['f1']:.3f} · "
+                f"AUROC: {trained_metrics['auroc']:.3f}"
+            )
+        except (FileNotFoundError, ImportError, ValueError, OSError, RuntimeError) as exc:
+            st.error(f"Training failed: {exc}")
 
+    st.session_state["model_trained"] = False
     try:
         vm = load_model(dataset, model_name)
         st.session_state["victim_model"] = vm
@@ -608,7 +664,7 @@ intent — so the model misclassifies it as benign?
 **Architecture (6 layers)**:
 1. **config** — frozen seeds, epsilon grid, label convention
 2. **data** — CICIDS-2017 / UNSW-NB15 network flow features
-3. **models** — LR, RF, XGBoost, MLP, CNN1D (pre-trained, loaded from `artifacts/`)
+3. **models** — LR, RF, XGBoost, MLP, CNN1D, and their soft-voting LR/RF/XGBoost ensemble
 4. **attacks** — FGSM, PGD, CW, DeepFool, JSMA (white-box), NES (black-box), projection
 5. **eval** — metrics (F1, AUROC, FPR), validity checks, transfer matrix
 6. **dashboard** — this UI
@@ -625,8 +681,16 @@ intent — so the model misclassifies it as benign?
 - **Evasion**: attack succeeded — malicious packet classified as benign.
 - **L1/L∞ norms**: how much features changed (total vs. max single change).
 """)
-    st.code("python -m scripts.pretrain --dataset dummy --models lr rf xgb mlp cnn1d", language="bash")
-    st.caption("Pre-trained models load instantly in the dashboard. Upload a CSV in Setup to use your own dataset. CW attack is ready — select 'CW' in the Attack Console.")
+    st.code(
+        "python -m scripts.pretrain --dataset cicids2017 "
+        "--models lr rf xgb mlp cnn1d ensemble",
+        language="bash",
+    )
+    st.caption(
+        "Provide and prepare the full labeled dataset before training. "
+        "The built-in dummy data is synthetic and for pipeline checks only. "
+        "CW attack is ready — select 'CW' in the Attack Console."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.metrics import (
-    f1_score, recall_score, precision_score, roc_auc_score,
+    accuracy_score, f1_score, recall_score, precision_score, roc_auc_score,
     average_precision_score, confusion_matrix,
 )
 
@@ -64,6 +64,7 @@ def compute_metrics(y_true, y_pred, y_prob) -> dict:
         auprc = 0.0
 
     return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),

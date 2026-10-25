@@ -45,8 +45,28 @@ def make_model(name: str, n_features: int, seed: int = MODEL_SEEDS[0]):
         import xgboost as xgb
         return VictimModel(
             xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.1,
-                              random_state=seed, eval_metric="logloss", use_label_encoder=False),
+                              random_state=seed, eval_metric="logloss"),
             is_torch=False, n_features=n_features)
+    if name == "ensemble":
+        from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+        from sklearn.linear_model import LogisticRegression
+        import xgboost as xgb
+
+        ensemble = VotingClassifier(
+            estimators=[
+                ("lr", LogisticRegression(max_iter=2000, random_state=seed, C=0.5)),
+                ("rf", RandomForestClassifier(
+                    n_estimators=200, random_state=seed, n_jobs=-1,
+                )),
+                ("xgb", xgb.XGBClassifier(
+                    n_estimators=200, max_depth=5, learning_rate=0.1,
+                    random_state=seed, eval_metric="logloss",
+                )),
+            ],
+            voting="soft",
+            n_jobs=1,
+        )
+        return VictimModel(ensemble, is_torch=False, n_features=n_features)
     if name == "mlp":
         from nids.models.mlp import MLP
         return VictimModel(MLP(n_features), is_torch=True, n_features=n_features)

@@ -1,6 +1,6 @@
 # Adversarial NIDS Evasion Console
 
-Gradient-based adversarial attacks against Network Intrusion Detection System (NIDS) models, with a Streamlit demo dashboard for interactive evasion demonstrations. Supports CICIDS2017 and UNSW-NB15 datasets; attacks include FGSM and PGD against LR, RF, XGBoost, MLP, and 1D-CNN victim models.
+Gradient-based adversarial attacks against Network Intrusion Detection System (NIDS) models, with a Streamlit dashboard for interactive evasion demonstrations. Supports CICIDS2017 and UNSW-NB15 datasets; attacks include FGSM and PGD against LR, RF, XGBoost, MLP, 1D-CNN, and a soft-voting LR/RF/XGBoost ensemble.
 
 ## Prerequisites
 
@@ -38,25 +38,51 @@ source .venv/bin/activate
 pip install streamlit numpy pandas scikit-learn torch xgboost joblib
 ```
 
-### 4. Pre-build datasets
+### 4. Prepare a dataset
 
-The built-in `dummy` dataset is generated automatically and ready to use — no download needed.
+The built-in `dummy` dataset is generated automatically and ready to use — no download needed. It is synthetic and only suitable for checking that training and the dashboard work; do not use its results as evidence of detection quality.
 
-If you want real CICIDS2017 or UNSW-NB15 data:
+For real CICIDS2017 training, the loader downloads the five-day **improved CICIDS2017** flow release from the researchers' companion site. It uses their documented labeling guidance: flows marked “Attempted” are labeled benign. The downloaded archive is retained at `data/raw/CICIDS2017_improved.zip`; cite the original CICIDS2017 dataset and the CNS 2022 correction study when reporting results.
 
-```bash
-python -c "from nids.data import load_dataset; load_dataset('cicids2017'); load_dataset('unsw_nb15')"
-```
-
-This downloads the raw CSVs (~100 MB each) into `data/raw/`, then preprocesses them into `data/processed/` and `data/meta/`.
-
-### 5. Build pre-trained models
+Then preprocess it:
 
 ```bash
-python scripts/pretrain.py --dataset dummy --model all
+python -c "from nids.data import load_dataset; load_dataset('cicids2017')"
 ```
 
-This trains all 5 models (LR, RF, XGB, MLP, CNN1D) on the `dummy` dataset and saves them to `artifacts/`.
+The loader processes CSV chunks to limit peak memory, drops non-finite rows, and creates a stratified 80/20 split. It writes train/test arrays and source metadata under `data/processed/` and `data/meta/`. UNSW-NB15 can be prepared the same way with `load_dataset('unsw_nb15')`.
+
+Dataset references: Sharafaldin et al., *Toward Generating a New Intrusion Detection Dataset and Intrusion Traffic Characterization* (2018); Engelen et al., *Troubleshooting an intrusion detection dataset: the CICIDS2017 case study* (2021); Liu et al., *Error Prevalence in NIDS datasets: A Case Study on CIC-IDS-2017 and CSE-CIC-IDS-2018* (IEEE CNS 2022).
+
+### 5. Train models
+
+```bash
+python -m scripts.pretrain --dataset cicids2017 --models lr rf xgb mlp cnn1d ensemble
+```
+
+Training is performed in this order:
+
+1. Load or preprocess the selected dataset and read its fixed train/test split.
+2. Fit `StandardScaler` on **training features only**, then transform the training features.
+3. Fit each selected model on the training split. PyTorch models shuffle batches and use the configured seed; sklearn models use the same seeded factory.
+4. Evaluate once on the untouched test split and report accuracy, F1, precision, recall, FPR/FNR, AUROC, and AUPRC.
+5. Save dashboard-ready models under `artifacts/{dataset}_{model}.joblib` and clean-test metrics under `results/E1/`.
+
+The ensemble averages predicted class probabilities from Logistic Regression, Random Forest, and XGBoost. `--seed` selects a reproducible model seed; `--epochs` and `--batch-size` affect only MLP/CNN1D.
+
+To compare a small set of settings for every model on both real datasets, use the validation-driven tuner:
+
+```bash
+python -m scripts.tune_models --datasets unsw_nb15 cicids2017 --models lr rf xgb mlp cnn1d ensemble --search-rows 500000 --batch-size 2048 --xgb-device cuda
+```
+
+The tuner selects settings using a validation slice taken only from the training partition, refits each selected model on the full training partition, and evaluates the held-out test partition once. It records validation trials in `results/E1/{dataset}_tuning_results.json` and updates the clean metrics and dashboard artifacts. Search work is limited to at most `--search-rows` examples per dataset to control memory; final fits use the full training partition. Use `--xgb-device cpu` on machines without an XGBoost-compatible CUDA GPU. PyTorch neural models use CUDA only when the installed PyTorch build includes CUDA support.
+
+For a fast pipeline smoke test (not a real-world performance result):
+
+```bash
+python -m scripts.pretrain --dataset dummy --models lr --seed 0
+```
 
 ### 6. (Optional) Run the terminal demo
 
@@ -105,16 +131,16 @@ adv-nids/
 
 ```bash
 # Run E1 + E2 + E3 on the dummy dataset
-python -m nids.experiments --dataset dummy --model all --e1 --e2 --e3
+python -m nids.experiments --dataset dummy --models lr rf xgb mlp cnn1d ensemble --e1 --e2 --e3
 ```
 
 ## Dashboard
 
-The Streamlit app reads pre-trained models and precomputed results — it does not retrain anything live.
+The Setup tab can train or refresh the selected model and displays held-out test metrics. The CLI supports training multiple models at once. Models and results are written locally; the app does not upload dataset contents.
 
 **Tabs**:
 
-1. **Setup** — Select dataset + model; view clean E1 metrics
+1. **Setup** — Select or upload a dataset, train/select a model, and view clean test metrics
 2. **Attack Console** — Browse a flow, see clean prediction, run live FGSM/PGD attack, view result panel with feature diff
 3. **Results Gallery** — Precomputed figures (ASR curves, transfer heatmap, confusion matrices)
 4. **About** — Project title, research questions, threat model
@@ -122,16 +148,17 @@ The Streamlit app reads pre-trained models and precomputed results — it does n
 ## Data Sources
 
 ### CICIDS2017
-- Auto-download: `https://iscx2016.secdataset.com/cicids2017/CICIDS2017.zip`
-- Manual download: https://www.unb.ca/cic/datasets/ids-2017.html
+- Official dataset page: https://www.unb.ca/cic/datasets/ids-2017.html
+- Optional automatic download: `https://iscx2016.secdataset.com/cicids2017/CICIDS2017.zip`
 - 78 features, 80 columns (includes labels)
 
 ### UNSW-NB15
-- Auto-download: `https://research.unsw.edu.au/projects/datasets/unsw-nisw-nids15-data/unswnb15-datasets.zip`
-- Manual download: https://research.unsw.edu.au/projects/datasets/unswnb15-dataset
-- 49 features (numeric + categorical), 9 attack categories + normal
+- Official dataset page: https://research.unsw.edu.au/projects/unsw-nb15-dataset
+- The loader accepts public Parquet train/test partitions in `data/raw/unsw_nb15_hf/`.
+- The Parquet mirror used here derives from the UNSW-NB15 Kaggle dataset and contains fewer source columns than the full 49-feature release. Training uses its 175,341-row partition and testing its 82,332-row partition, matching the official row counts; the mirror filenames are reversed.
+- Binary labels use `label` (0 benign, 1 attack); `attack_cat` is retained as the flow-family label.
 
-Both datasets are auto-downloaded by `nids.data.load_dataset()` into `data/raw/` during first run.
+CICIDS2017 is downloaded automatically by `nids.data.load_dataset()` when needed. UNSW-NB15 Parquet partitions must be placed in `data/raw/unsw_nb15_hf/`.
 
 ## Threat Model
 

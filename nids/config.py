@@ -24,7 +24,8 @@ LABEL_NAMES = {0: "benign", 1: "attack"}
 # --- Model names ---
 SHALLOW_MODELS = ["lr", "rf", "xgb"]
 DEEP_MODELS = ["mlp", "cnn1d"]
-ALL_MODELS = SHALLOW_MODELS + DEEP_MODELS
+ENSEMBLE_MODELS = ["ensemble"]
+ALL_MODELS = SHALLOW_MODELS + DEEP_MODELS + ENSEMBLE_MODELS
 
 # --- Datasets ---
 SUPPORTED_DATASETS = ["cicids2017", "unsw_nb15"]
