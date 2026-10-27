@@ -574,9 +574,11 @@ def _build_unsw_nb15(random_state: int = SPLIT_SEED) -> None:
         if not np.isfinite(X_train).all() or not np.isfinite(X_test).all():
             raise ValueError("UNSW-NB15 partitions contain non-finite feature values")
 
+        # Projection expects feature-column indices, not feature-name strings.
         one_hot_groups = {
             category: [
-                name for name in feature_names if name.startswith(f"{category}=")
+                index for index, name in enumerate(feature_names)
+                if name.startswith(f"{category}=")
             ]
             for category in categorical
         }

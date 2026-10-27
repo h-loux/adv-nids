@@ -191,3 +191,14 @@ def test_unsw_loader_downloads_predefined_parquet_split(tmp_path, monkeypatch):
     assert set(np.unique(train["y"])) == {0, 1}
     assert set(np.unique(test["y"])) == {0, 1}
     assert train["X_raw"].shape[1] == meta["n_features"]
+    assert meta["one_hot_groups"], "categorical columns should have one-hot groups"
+    assert all(
+        isinstance(index, int)
+        for indices in meta["one_hot_groups"].values()
+        for index in indices
+    ), "projection metadata must store one-hot column indices, not feature names"
+    assert all(
+        isinstance(bounds["min"], (int, float))
+        and isinstance(bounds["max"], (int, float))
+        for bounds in meta["bounds"].values()
+    )
