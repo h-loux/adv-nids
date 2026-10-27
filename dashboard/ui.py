@@ -135,7 +135,7 @@ def render_setup_hero(animate: bool) -> None:
         f"""
         <section class="setup-hero{motion_class}">
           <div class="setup-hero-copy">
-            <p class="setup-kicker"><span></span>MODEL LAB&nbsp; / &nbsp;01</p>
+            <p class="setup-kicker"><span></span>MODEL LAB&nbsp; / &nbsp;BASELINE</p>
             <h1>Know your baseline.<br><em>Then ask better questions.</em></h1>
             <p>Prepare a labeled traffic dataset, select a detector, and inspect its clean-set behavior.</p>
           </div>
