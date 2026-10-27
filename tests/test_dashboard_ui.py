@@ -175,3 +175,12 @@ def test_attack_outcome_prioritizes_invalid_perturbation(monkeypatch):
     assert app._attack_outcome(False, valid=False)[0] == "invalid"
     assert app._attack_outcome(True, valid=True)[0] == "valid_evasion"
     assert app._attack_outcome(False, valid=True)[0] == "not_evasion"
+
+
+def test_attack_outcome_marks_clean_baseline_outlier_ineligible():
+    from dashboard import app
+
+    outcome, detail = app._attack_outcome(True, valid=False, baseline_valid=False)
+
+    assert outcome == "ineligible_baseline"
+    assert "original clean flow" in detail
