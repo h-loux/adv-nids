@@ -12,8 +12,9 @@ Works in SCALED feature space for numerical stability.
 from __future__ import annotations
 import time
 import numpy as np
+import torch
 
-from nids.config import BENIGN
+from nids.config import ATTACK, BENIGN
 from nids.attacks.result import AttackResult
 from nids.attacks.projection import project
 
@@ -61,41 +62,35 @@ def carlini_wagner(model, x_raw: np.ndarray, eps: float, mask: np.ndarray = None
     one_hot = meta.get("one_hot_groups")
 
     for _ in range(n_binary_search):
-        # Optimize delta = x_adv - x_clean in scaled space
-        delta = np.zeros_like(x_scaled)
-        opt = torch.optim.Adam([torch.nn.Parameter(torch.as_tensor(delta))],
-                               lr=c_lr) if _is_torch_model(model) else None
+        # Optimize a bounded delta in the model's scaled feature space.
+        if _is_torch_model(model):
+            x_scaled_t = torch.as_tensor(x_scaled, dtype=torch.float32)
+            mask_t = torch.as_tensor(mask[None, :], dtype=torch.float32)
+            c_t = torch.as_tensor(c, dtype=torch.float32)
+            targets = torch.full((n_samples,), BENIGN, dtype=torch.long)
+            param = torch.nn.Parameter(torch.zeros_like(x_scaled_t))
+            opt = torch.optim.Adam([param], lr=c_lr)
 
-        if opt is not None:
-            param = opt.param_groups[0]["params"][0]
-            for step in range(n_steps):
-                opt.zero_grad()
-                x_adv_s = x_scaled + param.data * mask[None, :].astype(np.float32)
+            for _step in range(n_steps):
+                opt.zero_grad(set_to_none=True)
+                x_adv_s = x_scaled_t + param * mask_t
                 logits = _forward_torch(model, x_adv_s)
-                # CW loss: maximize loss for true class, minimize for target
-                loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
-                loss = loss_fn(logits, torch.as_tensor(
-                    np.full(n_samples, BENIGN, dtype=np.int64))).detach().numpy()
-                cw_loss = np.maximum(0, loss)  # f(x) = max(0, loss)
-
-                l2_term = np.sum((param.data.numpy() * mask)**2, axis=1)
-                total_loss = l2_term + c * cw_loss
-                (-total_loss).sum().backward()  # maximize
-                # Wait, wrong direction — we need backward
-                opt.zero_grad()
-                l2_tensor = torch.sum((param * torch.as_tensor(mask[None, :], dtype=torch.float32))**2, dim=1)
-                loss_tensor = torch.nn.functional.cross_entropy(
-                    _forward_torch(model, x_scaled + param * torch.as_tensor(mask[None, :], dtype=torch.float32)),
-                    torch.as_tensor(np.full(n_samples, BENIGN, dtype=np.int64)),
-                    reduction="none",
+                # Minimize perturbation magnitude plus targeted benign-class loss.
+                l2_tensor = torch.sum((param * mask_t) ** 2, dim=1)
+                target_loss = torch.nn.functional.cross_entropy(
+                    logits, targets, reduction="none",
                 )
-                f_tensor = torch.clamp(loss_tensor, min=0)
-                total = l2_tensor + c * f_tensor
-                loss = (-total).sum()
-                opt.zero_grad()
-                loss.backward()
+                total = l2_tensor + c_t * target_loss
+                (param_grad,) = torch.autograd.grad(total.sum(), param)
+                param.grad = param_grad
                 opt.step()
-            x_adv_scaled = (x_scaled + param.data.numpy() * mask[None, :]).astype(np.float64)
+
+            x_adv_scaled = (
+                x_scaled_t + param.detach() * mask_t
+            ).cpu().numpy().astype(np.float64)
+        else:
+            # sklearn models do not expose autograd; use numerical optimization.
+            x_adv_scaled = _cw_sklearn(model, x_scaled, mask, c, n_steps, c_lr)
         else:
             # sklearn model: use gradient if available, else finite differences
             x_adv_scaled = _cw_sklearn(model, x_scaled, mask, c, n_steps, c_lr)
@@ -173,9 +168,10 @@ def _cw_sklearn(model, x_scaled, mask, c, n_steps, lr):
                 d[mask] = delta
                 x_t = (x_scaled[i] + d).reshape(1, -1)
                 probs = model.predict_proba(model.to_raw(x_t))
-                logit_diff = probs[0, BENIGN]  # minimize this (push toward benign)
+                # Penalize whenever the attack probability still exceeds benign.
+                margin = probs[0, ATTACK] - probs[0, BENIGN] + 0.01
                 l2 = np.sum(d**2)
-                return l2 + c[i] * max(0, -logit_diff + 0.01)  # f(x)
+                return l2 + c[i] * max(0.0, float(margin))
 
             delta0 = np.zeros(int(mask.sum()))
             res = minimize(obj, delta0, method="L-BFGS-B", options={"maxiter": 1})
