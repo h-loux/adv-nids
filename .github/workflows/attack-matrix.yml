@@ -1,0 +1,60 @@
+name: Real-dataset attack matrix smoke test
+
+on:
+  push:
+    branches:
+      - fix/attack-pipeline-audit
+    paths:
+      - ".github/workflows/attack-matrix.yml"
+      - "scripts/validate_attack_matrix.py"
+      - "nids/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attack-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/attack-pipeline-audit
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run both-dataset model × attack matrix
+        run: |
+          python scripts/validate_attack_matrix.py \
+            --datasets cicids2017 unsw_nb15 \
+            --models lr rf xgb mlp cnn1d ensemble \
+            --sample-rows 512 \
+            --epsilon 0.2 \
+            --output results/attack_matrix_smoke.json
+
+      - name: Upload matrix report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attack-matrix-smoke-report
+          path: results/attack_matrix_smoke.json
+          if-no-files-found: warn
