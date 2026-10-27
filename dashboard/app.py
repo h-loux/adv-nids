@@ -58,84 +58,202 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
+def _prepare_uploaded_csv(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
+    """Normalize a labeled flow CSV, encoding categorical network features safely.
+
+    Returns X_raw, binary labels (0=benign, 1=attack), family labels, feature
+    names, and one-hot groups. Identifier columns are excluded; missing numeric
+    values are median-imputed rather than causing whole rows to be dropped.
+    """
+    df = df.copy()
+    df.columns = [str(column).strip() for column in df.columns]
+    if df.columns.duplicated().any():
+        duplicates = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(f"CSV has duplicate column names: {duplicates[:5]}")
+
+    def key(name: str) -> str:
+        return "".join(char for char in str(name).casefold() if char.isalnum())
+
+    by_key = {key(column): column for column in df.columns}
+    label_col = next(
+        (by_key[name] for name in ("label", "target", "class") if name in by_key),
+        None,
+    )
+    if label_col is None:
+        raise ValueError(
+            "Could not find a label column. Expected 'label', 'class', or 'target'."
+        )
+
+    # UNSW-style files carry a binary label plus a multiclass attack category.
+    # Keep the family only as descriptive metadata, never as a model input.
+    family_col = next(
+        (
+            by_key[name]
+            for name in ("attackcat", "attackfamily", "family")
+            if name in by_key and by_key[name] != label_col
+        ),
+        label_col,
+    )
+
+    label_raw = df[label_col]
+    label_numeric = pd.to_numeric(label_raw, errors="coerce")
+    label_values = set(label_numeric.dropna().unique().tolist())
+    if label_raw.notna().all() and label_numeric.notna().all() and label_values <= {0, 1}:
+        # Standard UNSW convention: 0=normal/benign and 1=attack.
+        y = label_numeric.to_numpy(dtype=np.int64)
+    else:
+        normalized_labels = label_raw.astype("string").str.strip().str.casefold()
+        benign_tokens = {
+            "benign", "normal", "legitimate", "0", "0.0", "false",
+            "non-attack", "non_attack", "non attack",
+        }
+        y = np.where(normalized_labels.isin(benign_tokens), BENIGN, ATTACK).astype(np.int64)
+
+    valid_label = label_raw.notna().to_numpy()
+    df = df.loc[valid_label].reset_index(drop=True)
+    y = np.asarray(y)[valid_label]
+    if set(np.unique(y)) != {BENIGN, ATTACK}:
+        raise ValueError(
+            "The label column must contain both benign/normal (0) and attack (1) rows."
+        )
+    family_values = df[family_col].fillna("unknown").astype(str).to_numpy()
+    family_values[y == BENIGN] = "benign"
+
+    # Match normalized spellings too, e.g. srcip/src_ip and sport/srcport.
+    identifier_keys = {
+        "flowid", "id", "srcip", "dstip", "sourceip", "destinationip",
+        "srcaddress", "dstaddress", "sourceaddress", "destinationaddress",
+        "srcport", "dstport", "sport", "dsport", "timestamp", "stime", "ltime",
+    }
+    drop_keys = {key(label_col), key(family_col)}
+    feature_columns = []
+    for column in df.columns:
+        normalized = key(column)
+        if normalized in drop_keys or normalized in identifier_keys:
+            continue
+        if "flowid" in normalized or normalized.endswith("timestamp"):
+            continue
+        feature_columns.append(column)
+
+    if not feature_columns:
+        raise ValueError("No usable feature columns remain after excluding labels and identifiers.")
+
+    raw_features = df[feature_columns].copy()
+    numeric_features = {}
+    categorical_features = {}
+    for column in feature_columns:
+        source = raw_features[column]
+        # Keep mostly numeric columns numeric even with blanks, "-", or malformed
+        # cells. Encode genuine categories such as proto/service/state as dummies.
+        converted = pd.to_numeric(source, errors="coerce")
+        present = source.notna() & source.astype(str).str.strip().ne("")
+        present_count = int(present.sum())
+        numeric_count = int((converted.notna() & present).sum())
+        numeric_ratio = numeric_count / present_count if present_count else 0.0
+
+        if numeric_ratio >= 0.8:
+            converted = converted.replace([np.inf, -np.inf], np.nan)
+            median = converted.median(skipna=True)
+            if not np.isfinite(median):
+                continue
+            numeric_features[column] = converted.fillna(float(median)).astype(np.float64)
+        else:
+            values = source.astype("string").str.strip()
+            values = values.mask(values.isna() | values.eq(""), "unknown")
+            categorical_features[column] = values.astype(str)
+
+    if not numeric_features and not categorical_features:
+        raise ValueError("No usable numeric or categorical feature values were found.")
+
+    numeric_df = pd.DataFrame(numeric_features, index=df.index)
+    if categorical_features:
+        categorical_df = pd.DataFrame(categorical_features, index=df.index)
+        encoded = pd.get_dummies(
+            categorical_df,
+            columns=list(categorical_df.columns),
+            prefix_sep="=",
+            dtype=np.float32,
+        )
+        X_df = pd.concat([numeric_df, encoded], axis=1)
+    else:
+        X_df = numeric_df
+
+    X_df = X_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    feature_names = list(X_df.columns)
+    X = X_df.to_numpy(dtype=np.float64)
+    if not np.isfinite(X).all():
+        raise ValueError("Cleaning left non-finite feature values; check the input CSV.")
+
+    one_hot_groups = {}
+    for column in categorical_features:
+        members = [
+            index for index, name in enumerate(feature_names)
+            if name.startswith(f"{column}=")
+        ]
+        if members:
+            one_hot_groups[column] = members
+
+    return X, y, family_values, feature_names, one_hot_groups
+
+
 @st.cache_data
 def process_uploaded_csv(uploaded_file, dataset_name: str) -> str:
-    """Convert an uploaded CSV into the processed .npz + meta.json format."""
-    df = pd.read_csv(uploaded_file)
-    df.columns = df.columns.str.strip()
-
-    # Auto-detect label column
-    label_col = None
-    for candidate in ["label", "Label", "class", "Class", "target", "Target"]:
-        if candidate in df.columns:
-            label_col = candidate
-            break
-
-    if label_col is None:
-        st.error("Could not find a label column. Expected: 'label', 'Label', 'class', or 'target'.")
+    """Convert a labeled CSV, including categorical network-flow data, to NPZ + metadata."""
+    try:
+        df = pd.read_csv(uploaded_file)
+        X, y, y_family, feature_names, one_hot_groups = _prepare_uploaded_csv(df)
+    except (OSError, UnicodeDecodeError, pd.errors.ParserError, ValueError) as exc:
+        st.error(f"Could not prepare this CSV: {exc}")
         return ""
 
-    # Auto-detect attack family column (CICIDS-style)
-    family_col = label_col
-
-    # Drop non-feature columns
-    drop_cols = {label_col, family_col}
-    # Also drop ID-like columns
-    for c in df.columns:
-        if any(k in c.lower() for k in ["flow id", "src ip", "dst ip", "src port", "dst port"]):
-            drop_cols.add(c)
-
-    feature_cols = [c for c in df.columns if c not in drop_cols]
-
-    # Convert feature columns to numeric, coercing errors to NaN
-    for col in feature_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Drop rows with NaN in features or label
-    df = df.dropna(subset=feature_cols + [label_col]).reset_index(drop=True)
-
-    if len(df) == 0:
-        st.error("All rows were dropped during cleaning (non-numeric values in features). "
-                 "Try a CSV with numeric feature columns only.")
-        return ""
-
-    X = df[feature_cols].values.astype(np.float64)
-    # Replace inf values (from division by zero in flow features like bytes_per_packet)
-    np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-    label_series = df[label_col]
-    y = np.where(label_series.astype(str).str.upper() != "BENIGN", ATTACK, BENIGN)
-    y_family = label_series.astype(str).values
-
-    # Split
+    from sklearn.model_selection import train_test_split
     from nids.config import SPLIT_SEED
-    idx = np.random.RandomState(SPLIT_SEED).permutation(len(y))
-    n_test = min(5000, len(y) // 5)
-    train_idx, test_idx = idx[n_test:], idx[:n_test]
+
+    if len(y) < 10:
+        st.error("Please upload at least 10 labeled flows so both splits can be evaluated.")
+        return ""
+    if min(np.bincount(y, minlength=2)) < 2:
+        st.error("The CSV needs at least two rows from each class (benign and attack).")
+        return ""
+    n_test = min(5000, max(2, len(y) // 5))
+    try:
+        train_idx, test_idx = train_test_split(
+            np.arange(len(y)),
+            test_size=n_test,
+            random_state=SPLIT_SEED,
+            stratify=y,
+        )
+    except ValueError as exc:
+        st.error(f"Could not create a stratified train/test split: {exc}")
+        return ""
 
     scaler = StandardScaler().fit(X[train_idx])
     X_train_scaled = scaler.transform(X[train_idx])
     X_test_scaled = scaler.transform(X[test_idx])
 
-    mutable_mask = [True] * len(feature_cols)
+    mutable_mask = [True] * len(feature_names)
     bounds = {}
-    for i, name in enumerate(feature_cols):
-        col = X[train_idx, i]
-        lo, hi = float(np.percentile(col, 1)), float(np.percentile(col, 99))
-        bounds[name] = {"min": lo, "max": hi, "mutable": True}
-    int_features = [i for i, name in enumerate(feature_cols) if np.allclose(X[:, i], np.round(X[:, i]), atol=1e-6)]
+    for index, name in enumerate(feature_names):
+        column = X[train_idx, index]
+        lower, upper = float(np.percentile(column, 1)), float(np.percentile(column, 99))
+        bounds[name] = {"min": lower, "max": upper, "mutable": True}
+    int_features = [
+        index for index in range(len(feature_names))
+        if np.allclose(X[:, index], np.round(X[:, index]), atol=1e-6)
+    ]
 
-    from nids.config import LABEL_NAMES
     meta = {
         "dataset": dataset_name,
-        "n_features": len(feature_cols),
-        "feature_names": list(feature_cols),
+        "n_features": len(feature_names),
+        "feature_names": feature_names,
         "mutable_mask": mutable_mask,
         "bounds": bounds,
         "int_features": int_features,
-        "one_hot_groups": {},
+        "one_hot_groups": one_hot_groups,
         "label_names": LABEL_NAMES,
         "n_train": len(train_idx),
         "n_test": len(test_idx),
+        "source": "user-uploaded CSV",
     }
 
     proc = DATA_DIR / "processed"
@@ -143,17 +261,23 @@ def process_uploaded_csv(uploaded_file, dataset_name: str) -> str:
     proc.mkdir(parents=True, exist_ok=True)
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    np.savez(proc / f"{dataset_name}_train.npz",
-             X_scaled=X_train_scaled, X_raw=X[train_idx], y=y[train_idx],
-             y_family=y_family[train_idx])
-    np.savez(proc / f"{dataset_name}_test.npz",
-             X_scaled=X_test_scaled, X_raw=X[test_idx], y=y[test_idx],
-             y_family=y_family[test_idx])
-    import json as _json
-    with open(meta_dir / f"{dataset_name}_meta.json", "w") as f:
-        _json.dump(meta, f, indent=2)
+    np.savez(
+        proc / f"{dataset_name}_train.npz",
+        X_scaled=X_train_scaled, X_raw=X[train_idx], y=y[train_idx],
+        y_family=y_family[train_idx],
+    )
+    np.savez(
+        proc / f"{dataset_name}_test.npz",
+        X_scaled=X_test_scaled, X_raw=X[test_idx], y=y[test_idx],
+        y_family=y_family[test_idx],
+    )
+    with (meta_dir / f"{dataset_name}_meta.json").open("w", encoding="utf-8") as output:
+        json.dump(meta, output, indent=2)
 
-    st.success(f"Dataset '{dataset_name}' loaded: {len(y)} flows, {len(feature_cols)} features")
+    st.success(
+        f"Dataset '{dataset_name}' loaded: {len(y):,} flows, "
+        f"{len(feature_names):,} encoded features"
+    )
     return dataset_name
 
 
