@@ -160,6 +160,30 @@ def process_uploaded_csv(uploaded_file, dataset_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Cached loaders
 # ---------------------------------------------------------------------------
+def _limit_prediction_parallelism(model) -> None:
+    """Avoid nested all-core fan-out across repeated single-flow model queries.
+
+    Interactive robustness methods may call predict_proba hundreds of times.
+    Using all cores for every tiny call creates large scheduling overhead and can
+    make the Streamlit session/terminal appear frozen, especially for forests and
+    ensembles. Limit inference parallelism only; training settings are unchanged.
+    """
+    estimators = [model.base]
+    fitted_estimators = getattr(model.base, "estimators_", None)
+    if isinstance(fitted_estimators, (list, tuple)):
+        estimators.extend(fitted_estimators)
+
+    for estimator in estimators:
+        if not hasattr(estimator, "get_params") or not hasattr(estimator, "set_params"):
+            continue
+        try:
+            params = estimator.get_params(deep=False)
+        except (TypeError, ValueError):
+            continue
+        if "n_jobs" in params:
+            estimator.set_params(n_jobs=1)
+
+
 @st.cache_resource
 def load_model(dataset: str, model_name: str):
     """Load a pre-trained VictimModel from artifacts/."""
@@ -185,6 +209,7 @@ def load_model(dataset: str, model_name: str):
     vm.seed = artifact.get("seed", 0)
     vm.epochs = artifact.get("epochs")
     vm.batch_size = artifact.get("batch_size", 256)
+    _limit_prediction_parallelism(vm)
     return vm
 
 
@@ -688,7 +713,7 @@ def _interactive_attack_kwargs(method: str, iteration_budget: int) -> dict:
     The bound is enforced here too, so callers cannot accidentally restore
     the costly algorithm defaults through a stale or malformed UI value.
     """
-    budget = max(1, min(5, int(iteration_budget)))
+    budget = max(1, min(3, int(iteration_budget)))
     options = {
         "FGSM": {},
         "PGD": {"n_steps": budget, "n_project": 2},
@@ -794,10 +819,10 @@ def render_attack():
     # Interactive safeguards: large defaults are appropriate for offline research
     # sweeps, not a synchronous single-flow dashboard request.
     iteration_budget = st.slider(
-        "Interactive iteration budget", min_value=1, max_value=5, value=3,
+        "Interactive iteration budget", min_value=1, max_value=3, value=2,
         help=(
-            "The dashboard intentionally caps iterative methods at five steps to "
-            "avoid locking up a synchronous UI. Use the experiment runner for "
+            "The dashboard intentionally caps iterative methods at three steps to "
+            "keep the synchronous UI responsive. Use the experiment runner for "
             "longer research sweeps."
         ),
     )
