@@ -511,8 +511,28 @@ _UNSW_IMMUTABLE = {"proto", "state"}
 def _build_unsw_nb15(random_state: int = SPLIT_SEED) -> None:
     _ensure_dirs()
     mirror_dir = RAW_DIR / "unsw_nb15_hf"
+    # The research-server ZIP URL previously used here is no longer live.
+    # Prefer the compact, predefined official train/test partition mirror. The
+    # filenames in this mirror are historically reversed: test.parquet contains
+    # the 175,341-row training partition, while train.parquet has 82,332 test rows.
     mirror_train = mirror_dir / "test.parquet"
     mirror_test = mirror_dir / "train.parquet"
+    raw = RAW_DIR / "unsw_nb15_raw.csv"
+    archive_path = RAW_DIR / "unsw_nb15.zip"
+
+    if not raw.exists() and not archive_path.exists():
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        if not mirror_train.exists():
+            _download_url(
+                "https://huggingface.co/datasets/wwydmanski/UNSW-NB15/resolve/main/test.parquet",
+                mirror_train,
+            )
+        if not mirror_test.exists():
+            _download_url(
+                "https://huggingface.co/datasets/wwydmanski/UNSW-NB15/resolve/main/train.parquet",
+                mirror_test,
+            )
+
     if mirror_train.exists() and mirror_test.exists():
         train_df = pd.read_parquet(mirror_train)
         test_df = pd.read_parquet(mirror_test)
@@ -583,13 +603,12 @@ def _build_unsw_nb15(random_state: int = SPLIT_SEED) -> None:
             json.dump(meta, output, indent=2)
         return
 
-    raw = RAW_DIR / "unsw_nb15_raw.csv"
     if not raw.exists():
-        archive_path = RAW_DIR / "unsw_nb15.zip"
         if not archive_path.exists():
-            _download_url(
-                "https://research.unsw.edu.au/projects/datasets/unsw-nisw-nids15-data/unswnb15-datasets.zip",
-                archive_path,
+            raise FileNotFoundError(
+                "UNSW-NB15 download did not produce its parquet mirror, and no local "
+                "raw CSV or UNSW-NB15 ZIP is available. Retry the Hugging Face mirror "
+                "download or place the official CSV/ZIP under data/raw/."
             )
         with zipfile.ZipFile(archive_path) as archive:
             csv_names = sorted(

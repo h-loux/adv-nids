@@ -121,3 +121,73 @@ def test_unsw_loader_rebuilds_stale_one_class_cache(tmp_path, monkeypatch):
 
     assert set(np.unique(train["y"])) == {0, 1}
     assert set(np.unique(test["y"])) == {0, 1}
+
+
+def test_unsw_loader_downloads_predefined_parquet_split(tmp_path, monkeypatch):
+    """Fresh setup uses the public mirror when neither local CSV nor ZIP exists."""
+    import pandas as pd
+
+    raw = tmp_path / "raw"
+    processed = tmp_path / "processed"
+    meta_dir = tmp_path / "meta"
+    for path in (raw, processed, meta_dir):
+        path.mkdir(parents=True)
+
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data, "RAW_DIR", raw)
+    monkeypatch.setattr(data, "PROCESSED_DIR", processed)
+    monkeypatch.setattr(data, "META_DIR", meta_dir)
+
+    downloaded = []
+
+    def fake_download(url, destination):
+        downloaded.append((url, destination.name))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"fake parquet placeholder for mocked reader")
+
+    monkeypatch.setattr(data, "_download_url", fake_download)
+
+    def frame(rows):
+        i = np.arange(rows)
+        label = (i % 2).astype(np.int64)
+        return pd.DataFrame({
+            "srcip": [f"10.0.0.{int(x % 250) + 1}" for x in i],
+            "sport": 1000 + i % 50000,
+            "dstip": [f"10.0.1.{int(x % 250) + 1}" for x in i],
+            "dsport": 2000 + i % 40000,
+            "proto": np.where(i % 2, "tcp", "udp"),
+            "state": np.where(i % 3, "FIN", "CON"),
+            "dur": (i % 1000) / 10.0,
+            "spkts": 1 + (i % 8),
+            "dpkts": 1 + (i % 5),
+            "attack_cat": np.where(label == 0, "Normal", "Generic"),
+            "label": label,
+        })
+
+    expected_train = frame(175_341)
+    expected_test = frame(82_332)
+
+    def fake_read_parquet(path, *args, **kwargs):
+        return expected_train.copy() if str(path).endswith("test.parquet") else expected_test.copy()
+
+    monkeypatch.setattr(data.pd, "read_parquet", fake_read_parquet)
+
+    meta = data.load_dataset("unsw_nb15")
+    train = data.get_train_arrays("unsw_nb15")
+    test = data.get_test_arrays("unsw_nb15")
+
+    assert downloaded == [
+        (
+            "https://huggingface.co/datasets/wwydmanski/UNSW-NB15/resolve/main/test.parquet",
+            "test.parquet",
+        ),
+        (
+            "https://huggingface.co/datasets/wwydmanski/UNSW-NB15/resolve/main/train.parquet",
+            "train.parquet",
+        ),
+    ]
+    assert meta["n_train"] == 175_341
+    assert meta["n_test"] == 82_332
+    assert set(np.unique(train["y"])) == {0, 1}
+    assert set(np.unique(test["y"])) == {0, 1}
+    assert train["X_raw"].shape[1] == meta["n_features"]
