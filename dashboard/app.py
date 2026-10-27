@@ -1075,12 +1075,12 @@ def render_attack():
           <span class="verdict-delta">{delta_label}</span>
         </div>
         <div class="verdict-track-row">
-          <div class="verdict-stage"><span class="verdict-node">01</span><div><small>BEFORE</small><strong>{escape(str(r["label_before"]).title())}</strong></div></div>
+          <div class="verdict-stage"><span class="verdict-node">◷</span><div><small>BEFORE</small><strong>{escape(str(r["label_before"]).title())}</strong></div></div>
           <div class="verdict-track"><i style="width:{before_width:.3f}%"></i></div>
           <strong class="verdict-number">{before_p:.1%}</strong>
         </div>
         <div class="verdict-track-row after">
-          <div class="verdict-stage"><span class="verdict-node">02</span><div><small>AFTER · {escape(str(r["method"]))}</small><strong>{escape(str(r["label_after"]).title())}</strong></div></div>
+          <div class="verdict-stage"><span class="verdict-node">✦</span><div><small>AFTER · {escape(str(r["method"]))}</small><strong>{escape(str(r["label_after"]).title())}</strong></div></div>
           <div class="verdict-track"><i style="width:{after_width:.3f}%"></i></div>
           <strong class="verdict-number">{after_p:.1%}</strong>
         </div>
