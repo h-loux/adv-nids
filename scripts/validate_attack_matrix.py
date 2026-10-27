@@ -113,7 +113,45 @@ def run_matrix(datasets: list[str], models: list[str], max_rows: int,
             attack_rows = np.flatnonzero(y_test == ATTACK)
             if not len(attack_rows):
                 raise ValueError("Held-out split contains no attack-labelled rows")
-            x_clean = np.atleast_2d(X_test[attack_rows[0]]).astype(np.float32)
+
+            # Bounds are 1st/99th training percentiles, so some clean test
+            # outliers can already be outside the configured validity domain.
+            # Use an eligible held-out attack flow so output validity failures
+            # measure the perturbation rather than the starting point.
+            feature_names = meta["feature_names"]
+            lower = np.asarray(
+                [meta["bounds"][name]["min"] for name in feature_names],
+                dtype=np.float64,
+            )
+            upper = np.asarray(
+                [meta["bounds"][name]["max"] for name in feature_names],
+                dtype=np.float64,
+            )
+            selected = None
+            chunk_size = 5_000
+            for chunk_start in range(0, len(y_test), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(y_test))
+                chunk_X = X_test[chunk_start:chunk_end]
+                local_attacks = np.flatnonzero(y_test[chunk_start:chunk_end] == ATTACK)
+                if not len(local_attacks):
+                    continue
+                chunk_rows = chunk_X[local_attacks]
+                in_bounds = (
+                    np.isfinite(chunk_rows).all(axis=1)
+                    & (chunk_rows >= lower).all(axis=1)
+                    & (chunk_rows <= upper).all(axis=1)
+                )
+                eligible = local_attacks[in_bounds]
+                if len(eligible):
+                    selected = chunk_start + int(eligible[0])
+                    break
+            if selected is None:
+                raise ValueError(
+                    "No held-out attack flow lies inside all configured feature bounds; "
+                    "review the dataset's percentile-bounds policy before the attack matrix."
+                )
+
+            x_clean = np.atleast_2d(X_test[selected]).astype(np.float32)
             mutable_mask = np.asarray(meta["mutable_mask"], dtype=bool)
             if x_clean.shape[1] != len(mutable_mask):
                 raise ValueError("Feature count does not match the dataset mutable mask")
