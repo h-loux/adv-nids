@@ -176,8 +176,9 @@ def run_matrix(datasets: list[str], models: list[str], max_rows: int,
                         x_adv, x_clean, meta, epsilon, model=model,
                     )
                     success_values = np.asarray(getattr(result, "success", [False])).reshape(-1)
+                    status = "PASS" if valid else "INVALID_OUTPUT"
                     emit_row(
-                        rows, dataset, model_name, attack_name, "PASS",
+                        rows, dataset, model_name, attack_name, status,
                         time.perf_counter() - started,
                         valid=bool(valid),
                         violations=list(violations),
@@ -227,7 +228,8 @@ def main() -> int:
         },
         "total": len(rows),
         "passed": sum(r["status"] == "PASS" for r in rows),
-        "failed": sum(r["status"] == "FAIL" for r in rows),
+        "failed": sum(r["status"] in {"FAIL", "INVALID_OUTPUT"} for r in rows),
+        "invalid_outputs": sum(r["status"] == "INVALID_OUTPUT" for r in rows),
         "skipped_xgboost_cuda": sum(r["status"] == "SKIPPED_XGBOOST_CUDA" for r in rows),
         "setup_errors": sum(r["status"] in {"MODEL_SETUP_ERROR", "DATASET_SETUP_ERROR"} for r in rows),
         "rows": rows,

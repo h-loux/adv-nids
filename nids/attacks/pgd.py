@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 from nids.config import BENIGN
-from nids.attacks.projection import project
+from nids.attacks.projection import finalize_projection, project
 from nids.attacks.fgsm import _gather_constraints
 from nids.attacks.result import AttackResult
 
@@ -62,6 +62,7 @@ def pgd(model, x_raw: np.ndarray, eps: float, mask: np.ndarray = None,
         delta_s = np.clip(xs - x_scaled, -eps, eps) * mask[None, :]
         x_adv_raw = model.to_raw(x_scaled + delta_s)
 
+    x_adv_raw = finalize_projection(x_adv_raw, x_raw, model, eps, mask, bounds, int_feats, one_hot)
     probs = model.predict_proba(x_adv_raw)
     success = np.argmax(probs, axis=1) == BENIGN
 

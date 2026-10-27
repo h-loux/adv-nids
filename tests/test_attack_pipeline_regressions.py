@@ -7,6 +7,8 @@ import pytest
 
 from nids import data
 from nids.attacks import cw
+from nids.attacks.projection import finalize_projection
+from nids.eval.validity import check_validity
 from nids.models import make_model
 
 
@@ -202,3 +204,60 @@ def test_unsw_loader_downloads_predefined_parquet_split(tmp_path, monkeypatch):
         and isinstance(bounds["max"], (int, float))
         for bounds in meta["bounds"].values()
     )
+
+
+class _IdentityScalerModel:
+    @staticmethod
+    def to_scaled(values):
+        return np.asarray(values, dtype=np.float64)
+
+    @staticmethod
+    def to_raw(values):
+        return np.asarray(values, dtype=np.float64)
+
+
+def test_validity_ignores_tiny_immutable_float_roundtrip_noise():
+    clean = np.array([[0.5, 1.0]])
+    adv = np.array([[0.6, 1.0 + 1e-12]])
+    meta = {
+        "feature_names": ["mutable", "fixed"],
+        "bounds": {
+            "mutable": {"min": 0.0, "max": 1.0},
+            "fixed": {"min": 0.0, "max": 2.0},
+        },
+        "mutable_mask": [True, False],
+        "int_features": [],
+        "one_hot_groups": {},
+    }
+    valid, violations = check_validity(adv, clean, meta, eps=0.2)
+    assert valid, violations
+
+
+def test_final_projection_enforces_bounds_immutability_integer_and_one_hot():
+    clean = np.array([[0.0, 1.0, 2.0, 1.0, 0.0]])
+    adv = np.array([[-0.4, 1.2, 2.4, 0.0, 1.0]])
+    meta = {
+        "feature_names": ["bounded", "fixed", "count", "proto=tcp", "proto=udp"],
+        "bounds": {
+            "bounded": {"min": 0.0, "max": 2.0},
+            "fixed": {"min": 0.0, "max": 2.0},
+            "count": {"min": 0.0, "max": 10.0},
+            "proto=tcp": {"min": 0.0, "max": 1.0},
+            "proto=udp": {"min": 0.0, "max": 1.0},
+        },
+        "mutable_mask": [True, False, True, False, False],
+        "int_features": [2],
+        "one_hot_groups": {"proto": [3, 4]},
+    }
+    projected = finalize_projection(
+        adv, clean, _IdentityScalerModel(), eps=0.2,
+        mutable_mask=meta["mutable_mask"], bounds=meta["bounds"],
+        int_features=meta["int_features"], one_hot_groups=meta["one_hot_groups"],
+    )
+    valid, violations = check_validity(
+        projected, clean, meta, eps=0.2, model=_IdentityScalerModel(),
+    )
+    assert valid, violations
+    np.testing.assert_array_equal(projected[0, 3:], [1.0, 0.0])
+    assert projected[0, 1] == clean[0, 1]
+    assert projected[0, 2] == round(projected[0, 2])

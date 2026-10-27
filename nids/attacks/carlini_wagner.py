@@ -16,7 +16,7 @@ import torch
 
 from nids.config import ATTACK, BENIGN
 from nids.attacks.result import AttackResult
-from nids.attacks.projection import project
+from nids.attacks.projection import finalize_projection, project
 
 
 def carlini_wagner(model, x_raw: np.ndarray, eps: float, mask: np.ndarray = None,
@@ -102,6 +102,7 @@ def carlini_wagner(model, x_raw: np.ndarray, eps: float, mask: np.ndarray = None
             d_s = np.clip(d_s, -eps, eps) * mask[None, :]
             x_adv_raw = model.to_raw(x_scaled + d_s)
 
+        x_adv_raw = finalize_projection(x_adv_raw, x_raw, model, eps, mask, bounds, int_feats, one_hot)
         # Evaluate
         probs = model.predict_proba(x_adv_raw)
         preds = np.argmax(probs, axis=1)

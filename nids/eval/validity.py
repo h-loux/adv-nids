@@ -36,11 +36,13 @@ def check_validity(x_adv, x_clean, meta, eps, model=None):
 
     violations = []
 
-    # 1. Immutable features must not change at all
-    if np.any(delta[~mutable_mask] != 0):
-        changed = [feature_names[i] for i in np.where(~mutable_mask)[0] if delta[i] != 0]
-        if changed:
-            violations.append(f"Immutable features changed: {changed}")
+    # 1. Immutable features must not change (allow floating-point transform noise).
+    changed = [
+        feature_names[i] for i in np.where(~mutable_mask)[0]
+        if abs(delta[i]) > 1e-8
+    ]
+    if changed:
+        violations.append(f"Immutable features changed: {changed}")
 
     # 2. Perturbation magnitude must not exceed eps
     if model is not None:
@@ -62,6 +64,34 @@ def check_validity(x_adv, x_clean, meta, eps, model=None):
         v = x_adv_1d[i]
         if v < b["min"] - 1e-6 or v > b["max"] + 1e-6:
             violations.append(f"'{name}' out of bounds [{b['min']:.4f}, {b['max']:.4f}]")
+
+    # 4. Packet/count features inferred as integers must remain integral.
+    for index in meta.get("int_features", []):
+        i = int(index)
+        if 0 <= i < len(x_adv_1d) and abs(x_adv_1d[i] - round(x_adv_1d[i])) > 1e-6:
+            violations.append(f"Integer feature '{feature_names[i]}' is not integral")
+
+    # 5. One-hot groups may be all-zero for a category unseen in training; otherwise
+    # values must be binary and the sum must be one.
+    name_to_index = {name: i for i, name in enumerate(feature_names)}
+    for group_name, members in meta.get("one_hot_groups", {}).items():
+        indices = []
+        for member in members:
+            if isinstance(member, (int, np.integer)) and not isinstance(member, (bool, np.bool_)):
+                col = int(member)
+            elif isinstance(member, str):
+                col = name_to_index.get(member)
+            else:
+                col = None
+            if col is not None and 0 <= col < len(x_adv_1d) and col not in indices:
+                indices.append(col)
+        if not indices:
+            continue
+        values = x_adv_1d[indices]
+        binary = np.isclose(values, 0.0, atol=1e-6) | np.isclose(values, 1.0, atol=1e-6)
+        total = float(np.sum(np.rint(values)))
+        if not np.all(binary) or not (np.isclose(total, 0.0, atol=1e-6) or np.isclose(total, 1.0, atol=1e-6)):
+            violations.append(f"One-hot group '{group_name}' is not a binary encoding")
 
     return (len(violations) == 0, violations)
 

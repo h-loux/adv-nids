@@ -83,6 +83,10 @@ def project(x_adv: np.ndarray, x_clean: np.ndarray, eps: float | None = None,
                     cols.append(index)
             if not cols:
                 continue
+            # Keep immutable groups untouched. An all-zero group can represent a
+            # category absent from the training split, so do not force argmax=1.
+            if mutable_mask is not None and not np.any(np.asarray(mutable_mask, dtype=bool)[cols]):
+                continue
             group_vals = x_adv[:, cols].copy()
             # For each sample, keep the argmax column as 1, rest as 0
             argmax = np.argmax(group_vals, axis=1)
@@ -90,3 +94,42 @@ def project(x_adv: np.ndarray, x_clean: np.ndarray, eps: float | None = None,
             x_adv[np.arange(len(x_adv)), np.asarray(cols)[argmax]] = 1
 
     return x_adv
+
+
+def finalize_projection(x_adv, x_clean, model, eps, mutable_mask=None,
+                        bounds=None, int_features=None, one_hot_groups=None):
+    """Enforce raw constraints while preserving the scaled-space epsilon budget."""
+    clean = np.atleast_2d(np.asarray(x_clean, dtype=np.float64))
+    candidate = np.atleast_2d(np.asarray(x_adv, dtype=np.float64))
+    if clean.shape != candidate.shape:
+        raise ValueError(f"clean/adversarial shapes differ: {clean.shape} != {candidate.shape}")
+    mask = np.ones(candidate.shape[1], dtype=bool) if mutable_mask is None else np.asarray(mutable_mask, dtype=bool)
+    candidate = project(candidate, clean, eps=None, mutable_mask=mask, bounds=bounds,
+                        int_features=int_features, one_hot_groups=one_hot_groups)
+    clean_scaled = np.asarray(model.to_scaled(clean), dtype=np.float64)
+    candidate_scaled = np.asarray(model.to_scaled(candidate), dtype=np.float64)
+    over_budget = np.abs(candidate_scaled - clean_scaled) > eps + 1e-6
+
+    # Restore categorical groups atomically if discrete projection exceeded epsilon.
+    name_to_index = {name: i for i, name in enumerate(bounds.keys())} if bounds is not None else {}
+    for members in (one_hot_groups or {}).values():
+        cols = []
+        for member in members:
+            if isinstance(member, (int, np.integer)) and not isinstance(member, (bool, np.bool_)):
+                col = int(member)
+            elif isinstance(member, str):
+                col = name_to_index.get(member)
+            else:
+                col = None
+            if col is not None and 0 <= col < candidate.shape[1] and col not in cols:
+                cols.append(col)
+        if cols:
+            rows_to_restore = np.any(over_budget[:, cols], axis=1)
+            candidate[np.ix_(rows_to_restore, cols)] = clean[np.ix_(rows_to_restore, cols)]
+            over_budget[np.ix_(rows_to_restore, cols)] = False
+
+    # Roll back scalar adjustments (including integer rounding) outside epsilon.
+    for row, col in np.argwhere(over_budget):
+        if mask[col]:
+            candidate[row, col] = clean[row, col]
+    return candidate
