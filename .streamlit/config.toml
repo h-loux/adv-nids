@@ -6,3 +6,6 @@ secondaryBackgroundColor = "#10192A"
 textColor = "#EAF2FF"
 font = "sans serif"
 chartCategoricalColors = ["#62D9FF", "#9D8BFF", "#53E0BC", "#FF8C82", "#FFD166", "#5C8DFF"]
+
+[server]
+maxUploadSize = 500
