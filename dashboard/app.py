@@ -653,8 +653,18 @@ def render_setup():
 # ---------------------------------------------------------------------------
 # Tab: Attack Console
 # ---------------------------------------------------------------------------
-def _attack_outcome(evasion: bool, valid: bool) -> tuple[str, str]:
-    """Classify an experiment outcome without allowing invalid samples to pass."""
+def _attack_outcome(
+    evasion: bool,
+    valid: bool,
+    baseline_valid: bool = True,
+) -> tuple[str, str]:
+    """Classify an outcome; the clean sample must satisfy constraints first."""
+    if not baseline_valid:
+        return (
+            "ineligible_baseline",
+            "The original clean flow is already outside the configured feature bounds. "
+            "This run is not eligible as valid-robustness evidence.",
+        )
     if not valid:
         if evasion:
             return (
@@ -743,6 +753,19 @@ def render_attack():
     true_label = int(y[idx])
     true_family = str(families[idx])
 
+    # The validity policy uses the configured training-derived feature bounds.
+    # Check the original row before running any perturbation so a pre-existing
+    # outlier is not misreported as an attack-created constraint violation.
+    baseline_valid, baseline_violations = check_validity(
+        x_clean, x_clean, meta, eps=0.0, model=vm,
+    )
+    if not baseline_valid:
+        st.warning(
+            "This clean flow is already outside the configured feature bounds. "
+            "Any run on it will be marked ineligible as valid-robustness evidence. "
+            "Choose an in-range flow or review the percentile-based bounds policy."
+        )
+
     probs_before = vm.predict_proba(x_clean)[0]
     pred_before = int(np.argmax(probs_before))
     conf_before = float(probs_before[1])  # P(attack)
@@ -816,6 +839,8 @@ def render_attack():
 
                 st.session_state["result"] = dict(
                     evasion=evasion, valid=valid, violations=violations,
+                    baseline_valid=baseline_valid,
+                    baseline_violations=baseline_violations,
                     evasion_condition=evasion_condition,
                     msg=behaviour_msg, label_before=LABEL_NAMES[pred_before],
                     label_after=LABEL_NAMES[pred_after],
@@ -846,8 +871,16 @@ def render_attack():
     st.subheader("Result — what happened?")
 
     # Validity takes precedence: an infeasible prediction flip is not success.
-    outcome, outcome_detail = _attack_outcome(r["evasion"], r["valid"])
-    if outcome == "invalid_after_flip":
+    outcome, outcome_detail = _attack_outcome(
+        r["evasion"], r["valid"], r.get("baseline_valid", True),
+    )
+    if outcome == "ineligible_baseline":
+        st.warning(
+            "**Ineligible starting flow.** The original clean row already violates "
+            f"{len(r.get('baseline_violations', []))} configured feature bound(s). "
+            "Do not interpret this run as valid evasion evidence."
+        )
+    elif outcome == "invalid_after_flip":
         st.warning(
             "**Prediction flipped, but this is NOT a valid evasion.** "
             f"The perturbation violates {len(r['violations'])} constraint(s); "
