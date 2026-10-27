@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import sys
 import time
 import traceback
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 
@@ -23,7 +27,6 @@ from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.eval.validity import check_validity
 from nids.training import fit_model
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "results" / "attack_matrix_smoke.json"
 
 ATTACKS = {
