@@ -155,6 +155,18 @@ def run_matrix(datasets: list[str], models: list[str], max_rows: int,
             mutable_mask = np.asarray(meta["mutable_mask"], dtype=bool)
             if x_clean.shape[1] != len(mutable_mask):
                 raise ValueError("Feature count does not match the dataset mutable mask")
+            bounds_order_matches = list(meta["bounds"].keys()) == list(meta["feature_names"])
+            baseline_violations = []
+            for feature_idx, feature_name in enumerate(meta["feature_names"]):
+                bound = meta["bounds"][feature_name]
+                value = float(x_clean[0, feature_idx])
+                if value < bound["min"] - 1e-6 or value > bound["max"] + 1e-6:
+                    baseline_violations.append({
+                        "feature": feature_name,
+                        "value": value,
+                        "min": float(bound["min"]),
+                        "max": float(bound["max"]),
+                    })
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             for model_name in models:
@@ -215,11 +227,28 @@ def run_matrix(datasets: list[str], models: list[str], max_rows: int,
                     )
                     success_values = np.asarray(getattr(result, "success", [False])).reshape(-1)
                     status = "PASS" if valid else "INVALID_OUTPUT"
+                    violating_features = []
+                    if not valid:
+                        for feature_idx, feature_name in enumerate(meta["feature_names"]):
+                            bound = meta["bounds"][feature_name]
+                            adv_value = float(x_adv[0, feature_idx])
+                            if adv_value < bound["min"] - 1e-6 or adv_value > bound["max"] + 1e-6:
+                                violating_features.append({
+                                    "feature": feature_name,
+                                    "clean_value": float(x_clean[0, feature_idx]),
+                                    "adversarial_value": adv_value,
+                                    "min": float(bound["min"]),
+                                    "max": float(bound["max"]),
+                                })
                     emit_row(
                         rows, dataset, model_name, attack_name, status,
                         time.perf_counter() - started,
                         valid=bool(valid),
                         violations=list(violations),
+                        violating_features=violating_features,
+                        clean_flow_index=int(selected),
+                        clean_flow_violations=baseline_violations,
+                        bounds_order_matches_feature_names=bounds_order_matches,
                         success=bool(success_values[0]) if len(success_values) else False,
                         queries=int(getattr(result, "n_queries", 0)),
                         runtime_ms=float(getattr(result, "runtime_ms", 0.0)),
