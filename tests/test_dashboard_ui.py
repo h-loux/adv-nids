@@ -171,7 +171,7 @@ def test_attack_outcome_prioritizes_invalid_perturbation(monkeypatch):
     monkeypatch.setattr(app.st, "success", lambda message, **kwargs: captured["success"].append(message))
 
     # Exercise the status rendering helper so this can be tested without a live Streamlit session.
-    assert app._attack_outcome("evasion", valid=False)[0] == "invalid_after_flip"
-    assert app._attack_outcome("blocked", valid=False)[0] == "invalid"
-    assert app._attack_outcome("evasion", valid=True)[0] == "valid_evasion"
-    assert app._attack_outcome("blocked", valid=True)[0] == "not_evasion"
+    assert app._attack_outcome(True, valid=False)[0] == "invalid_after_flip"
+    assert app._attack_outcome(False, valid=False)[0] == "invalid"
+    assert app._attack_outcome(True, valid=True)[0] == "valid_evasion"
+    assert app._attack_outcome(False, valid=True)[0] == "not_evasion"
