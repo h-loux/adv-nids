@@ -720,6 +720,33 @@ def render_attack():
         eps = st.select_slider("Epsilon (ε)", options=EPS_GRID, value=0.2,
                                help="Maximum allowed perturbation per feature.")
 
+    # Interactive safeguards: large defaults are appropriate for offline research
+    # sweeps, not a synchronous single-flow dashboard request.
+    iteration_budget = st.slider(
+        "Interactive iteration budget", min_value=1, max_value=10, value=3,
+        help=(
+            "Caps iterative work for this one-flow UI run. Use the experiment runner "
+            "for longer benchmark sweeps; high-dimensional finite-difference methods "
+            "can take a long time on tree/ensemble models."
+        ),
+    )
+    attack_kwargs = {
+        "FGSM": {},
+        "PGD": {"n_steps": iteration_budget, "n_project": 2},
+        "CW": {
+            "n_steps": iteration_budget,
+            "n_binary_search": 2,
+            "n_project": 2,
+        },
+        "DeepFool": {"n_steps": iteration_budget},
+        "JSMA": {"n_steps": iteration_budget, "gamma": 0.1},
+        "NES": {
+            "n_queries": iteration_budget * 8,
+            "n_directions": 4,
+            "n_steps": iteration_budget,
+        },
+    }[method]
+
     # Reset attacking flag on each render to avoid stuck state from prior crashes
     st.session_state.pop("_attacking", None)
 
@@ -735,7 +762,7 @@ def render_attack():
                 st.markdown('<div class="loader-container"><div class="loader"></div>'
                             '<p>Evaluating the selected robustness experiment...</p></div>',
                             unsafe_allow_html=True)
-                result = attack_fn(vm, x_clean, eps, mask=mutable_mask)
+                result = attack_fn(vm, x_clean, eps, mask=mutable_mask, **attack_kwargs)
                 x_adv = result.x_adv  # AttackResult -> raw ndarray
                 queries = result.n_queries
                 probs_after = vm.predict_proba(x_adv)[0]
@@ -746,12 +773,11 @@ def render_attack():
                 l1, linf = perturbation_magnitude(x_adv, x_clean)
                 diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
                 evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
-                # NES is black-box; do not query the victim's input gradient
-                # just to populate a visualization after the method has finished.
+                # Computing a finite-difference gradient here can require hundreds
+                # of additional model calls (especially for trees/ensembles). Keep the
+                # interactive result path bounded; gradient analysis belongs in offline
+                # experiments and is not required to interpret this sample's outcome.
                 grad = None
-                if method != "NES":
-                    grad = vm.gradient(x_clean, target=BENIGN)
-                    grad = grad.reshape(-1) if grad.ndim > 1 else grad
 
                 st.session_state["result"] = dict(
                     evasion=evasion, valid=valid, violations=violations,
@@ -850,7 +876,7 @@ def render_attack():
 
     # Gradient magnitudes are a white-box diagnostic, not part of NES.
     if r["grad"] is None:
-        st.caption("Gradient magnitudes are omitted for NES; it is evaluated as a black-box method.")
+        st.caption("Gradient magnitudes are deferred to offline analysis to keep the interactive run responsive.")
     else:
         grad_masked = np.abs(r["grad"]) * r["mutable_mask"].astype(float)
         if grad_masked.any():
