@@ -746,8 +746,12 @@ def render_attack():
                 l1, linf = perturbation_magnitude(x_adv, x_clean)
                 diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
                 evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
-                grad = vm.gradient(x_clean, target=BENIGN)
-                grad = grad.reshape(-1) if grad.ndim > 1 else grad
+                # NES is black-box; do not query the victim's input gradient
+                # just to populate a visualization after the method has finished.
+                grad = None
+                if method != "NES":
+                    grad = vm.gradient(x_clean, target=BENIGN)
+                    grad = grad.reshape(-1) if grad.ndim > 1 else grad
 
                 st.session_state["result"] = dict(
                     evasion=evasion, valid=valid, violations=violations,
@@ -844,18 +848,20 @@ def render_attack():
         styled = diff_df.style.map(color_delta, subset=["delta"])
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # Gradient magnitudes
-    grad_masked = np.abs(r["grad"]) * r["mutable_mask"].astype(float)
-    if grad_masked.any():
-        top_idx = np.argsort(grad_masked)[::-1][:15]
-        grad_df = pd.DataFrame({
-            "feature": [feature_names[i] for i in top_idx],
-            "gradient": grad_masked[top_idx],
-        }).set_index("feature")
-        with st.expander("Gradient magnitudes — what the attack targets"):
-            st.caption("These are the features the model's decision depends on most. "
-                       "The attack focuses its perturbation budget here.")
-            st.bar_chart(grad_df)
+    # Gradient magnitudes are a white-box diagnostic, not part of NES.
+    if r["grad"] is None:
+        st.caption("Gradient magnitudes are omitted for NES; it is evaluated as a black-box method.")
+    else:
+        grad_masked = np.abs(r["grad"]) * r["mutable_mask"].astype(float)
+        if grad_masked.any():
+            top_idx = np.argsort(grad_masked)[::-1][:15]
+            grad_df = pd.DataFrame({
+                "feature": [feature_names[i] for i in top_idx],
+                "gradient": grad_masked[top_idx],
+            }).set_index("feature")
+            with st.expander("Gradient magnitudes — post-hoc model sensitivity"):
+                st.caption("Post-hoc white-box sensitivity only; it is not used to construct this run's perturbation.")
+                st.bar_chart(grad_df)
 
 
 # ---------------------------------------------------------------------------
