@@ -653,6 +653,36 @@ def render_setup():
 # ---------------------------------------------------------------------------
 # Tab: Attack Console
 # ---------------------------------------------------------------------------
+def _interactive_attack_kwargs(method: str, iteration_budget: int) -> dict:
+    """Return deliberately bounded parameters for one interactive flow.
+
+    Long research sweeps should run offline rather than blocking Streamlit.
+    The bound is enforced here too, so callers cannot accidentally restore
+    the costly algorithm defaults through a stale or malformed UI value.
+    """
+    budget = max(1, min(5, int(iteration_budget)))
+    options = {
+        "FGSM": {},
+        "PGD": {"n_steps": budget, "n_project": 2},
+        "CW": {
+            "n_steps": budget,
+            "n_binary_search": 2,
+            "n_project": 2,
+        },
+        "DeepFool": {"n_steps": budget},
+        "JSMA": {"n_steps": budget, "gamma": 0.1},
+        "NES": {
+            "n_queries": budget * 8,
+            "n_directions": 4,
+            "n_steps": budget,
+        },
+    }
+    try:
+        return options[method]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported interactive method: {method}") from exc
+
+
 def render_attack():
     render_page_header(
         "02 / Robustness probe",
@@ -723,29 +753,14 @@ def render_attack():
     # Interactive safeguards: large defaults are appropriate for offline research
     # sweeps, not a synchronous single-flow dashboard request.
     iteration_budget = st.slider(
-        "Interactive iteration budget", min_value=1, max_value=10, value=3,
+        "Interactive iteration budget", min_value=1, max_value=5, value=3,
         help=(
-            "Caps iterative work for this one-flow UI run. Use the experiment runner "
-            "for longer benchmark sweeps; high-dimensional finite-difference methods "
-            "can take a long time on tree/ensemble models."
+            "The dashboard intentionally caps iterative methods at five steps to "
+            "avoid locking up a synchronous UI. Use the experiment runner for "
+            "longer research sweeps."
         ),
     )
-    attack_kwargs = {
-        "FGSM": {},
-        "PGD": {"n_steps": iteration_budget, "n_project": 2},
-        "CW": {
-            "n_steps": iteration_budget,
-            "n_binary_search": 2,
-            "n_project": 2,
-        },
-        "DeepFool": {"n_steps": iteration_budget},
-        "JSMA": {"n_steps": iteration_budget, "gamma": 0.1},
-        "NES": {
-            "n_queries": iteration_budget * 8,
-            "n_directions": 4,
-            "n_steps": iteration_budget,
-        },
-    }[method]
+    attack_kwargs = _interactive_attack_kwargs(method, iteration_budget)
 
     # Reset attacking flag on each render to avoid stuck state from prior crashes
     st.session_state.pop("_attacking", None)
