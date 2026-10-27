@@ -177,15 +177,19 @@ class VictimModel:
             import torch
             grads = []
             for i in range(n):
-                t = torch.as_tensor(x_scaled[i:i+1], dtype=torch.float32, requires_grad=True)
+                # as_tensor() does not accept requires_grad; create a leaf tensor
+                # and request only the input gradient (model weights stay untouched).
+                t = torch.as_tensor(
+                    x_scaled[i:i+1], dtype=torch.float32,
+                ).detach().clone().requires_grad_(True)
                 logits = self.base(t)
                 if logits.shape[1] == 2:
                     prob = torch.softmax(logits, dim=1)[0, target]
                 else:
                     sig = torch.sigmoid(logits)[0]
                     prob = sig if target == 1 else 1 - sig
-                prob.backward()
-                g = t.grad[0].cpu().numpy().astype(np.float64)
+                (g_tensor,) = torch.autograd.grad(prob, t)
+                g = g_tensor[0].detach().cpu().numpy().astype(np.float64)
                 grads.append(g)
             return np.array(grads)
         else:
