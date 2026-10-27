@@ -613,7 +613,7 @@ def render_setup():
 
     st.markdown(
         '<div class="setup-section-heading setup-reveal">'
-        '<span>01</span><div><strong>Configure the clean baseline</strong>'
+        '<span>⌁</span><div><strong>Configure the clean baseline</strong>'
         '<small>Data source and detector settings</small></div></div>',
         unsafe_allow_html=True,
     )
@@ -621,7 +621,7 @@ def render_setup():
     with data_column:
         st.markdown(
             '<div class="setup-control-panel setup-reveal">'
-            '<div class="setup-control-heading"><span class="control-index">A</span>'
+            '<div class="setup-control-heading"><span class="control-index">▤</span>'
             '<div><strong>Traffic source</strong><small>Select prepared data or import a labeled CSV.</small></div></div>'
             '</div>',
             unsafe_allow_html=True,
@@ -654,7 +654,7 @@ def render_setup():
     with model_column:
         st.markdown(
             '<div class="setup-control-panel setup-reveal">'
-            '<div class="setup-control-heading"><span class="control-index coral">B</span>'
+            '<div class="setup-control-heading"><span class="control-index coral">◉</span>'
             '<div><strong>Detection model</strong><small>Choose the classifier for clean-set evaluation.</small></div></div>'
             '</div>',
             unsafe_allow_html=True,
@@ -749,7 +749,7 @@ def render_setup():
         if m:
             st.markdown(
                 '<div class="setup-section-heading setup-reveal">'
-                '<span>03</span><div><strong>Clean-set diagnostics</strong>'
+                '<span>⌕</span><div><strong>Clean-set diagnostics</strong>'
                 '<small>Observed performance on the existing held-out split</small></div></div>',
                 unsafe_allow_html=True,
             )
@@ -867,7 +867,7 @@ def _interactive_attack_kwargs(method: str, iteration_budget: int) -> dict:
 
 def render_attack():
     render_page_header(
-        "02 / Robustness probe",
+        "Robustness probe",
         "A small change.\nA different verdict?",
         "Choose one held-out connection and compare the detector's judgment before and after a bounded adversarial perturbation.",
     )
@@ -886,9 +886,12 @@ def render_attack():
     mutable_mask = vm.mutable_mask
 
     st.markdown("**Step 1 — Pick a flow**: Select a network flow to inspect.")
-    label_filter = st.radio("Show", ("All flows", "Attack flows only"),
-                            horizontal=True,
-                            help="Attack flows are the evasion targets.")
+    label_filter = st.select_slider(
+        "Traffic cohort",
+        options=("All flows", "Attack flows only"),
+        value="Attack flows only",
+        help="Focus on malicious flows for the robustness probe, or inspect the full held-out set.",
+    )
     idxs = np.arange(len(y))
     if label_filter == "Attack flows only":
         idxs = idxs[y == ATTACK]
@@ -934,11 +937,12 @@ def render_attack():
     st.markdown("**Step 3 — Configure attack**: Select an attack and perturbation budget.")
     col_a, col_b = st.columns(2)
     with col_a:
-        method = st.radio("Attack method", ("FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"),
-                          horizontal=True,
-                          help="**FGSM** = single-step gradient sign. **PGD** = iterative projected gradient. "
-                               "**CW** = optimization-based. **DeepFool** = boundary distance estimation. "
-                               "**JSMA** = saliency-based. **NES** = black-box zeroth-order.")
+        method = st.select_slider(
+            "Attack method",
+            options=("FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"),
+            value="FGSM",
+            help="FGSM: single-step · PGD: iterative projection · CW: optimization · DeepFool: boundary search · JSMA: saliency · NES: black-box queries.",
+        )
         attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw, "DeepFool": deepfool,
                      "JSMA": jsma, "NES": nes_attack}[method]
     with col_b:
@@ -1055,11 +1059,35 @@ def render_attack():
             f"No valid evasion observed — model still says {r['label_after']}."
         )
 
-    st.markdown("**After attack — model's new prediction**")
-    col_e, col_f, col_g = st.columns(3)
-    col_e.metric("Before", f"P(attack) = {r['probs_before']['attack']:.4f}")
-    col_f.metric("After", f"P(attack) = {r['probs_after']['attack']:.4f}")
-    col_g.metric("Status", r["msg"])
+    before_p = float(r["probs_before"]["attack"])
+    after_p = float(r["probs_after"]["attack"])
+    change_pp = (after_p - before_p) * 100
+    before_width = max(0.0, min(100.0, before_p * 100))
+    after_width = max(0.0, min(100.0, after_p * 100))
+    delta_label = f"{change_pp:+.1f} percentage points"
+    st.html(f"""
+      <section class="verdict-journey" aria-label="Prediction before and after">
+        <div class="verdict-journey-head">
+          <div><p class="comparison-kicker">ONE FLOW · TWO VERDICTS</p>
+            <h3>How the detector's confidence moved</h3>
+            <p>Bars show the model's estimated probability that this flow is malicious.</p>
+          </div>
+          <span class="verdict-delta">{delta_label}</span>
+        </div>
+        <div class="verdict-track-row">
+          <div class="verdict-stage"><span class="verdict-node">01</span><div><small>BEFORE</small><strong>{escape(str(r["label_before"]).title())}</strong></div></div>
+          <div class="verdict-track"><i style="width:{before_width:.3f}%"></i></div>
+          <strong class="verdict-number">{before_p:.1%}</strong>
+        </div>
+        <div class="verdict-track-row after">
+          <div class="verdict-stage"><span class="verdict-node">02</span><div><small>AFTER · {escape(str(r["method"]))}</small><strong>{escape(str(r["label_after"]).title())}</strong></div></div>
+          <div class="verdict-track"><i style="width:{after_width:.3f}%"></i></div>
+          <strong class="verdict-number">{after_p:.1%}</strong>
+        </div>
+        <div class="verdict-foot"><span>0% · likely benign</span><span>50% · decision boundary</span><span>100% · likely attack</span></div>
+      </section>
+    """)
+    st.caption(f"Outcome interpretation: {outcome_detail}")
 
     st.markdown("### Perturbation cost")
     st.markdown(
@@ -1073,27 +1101,16 @@ def render_attack():
         ("Queries", f"{r.get('queries', 0):,}", "Model evaluations"),
     ])
 
-    # Validity + behaviour checks
-    st.markdown("### Constraint checks")
-    st.markdown(
-        '<p class="section-intro">Validity checks enforce feature bounds, immutability, and '
-        'the epsilon budget; behavior checks compare the prediction before and after.</p>',
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(2)
-    with cols[0]:
-        icon = "✅" if r["valid"] else "❌"
-        st.markdown(f"{icon} **Validity**: {'pass' if r['valid'] else 'FAIL'}")
+    with st.expander("Evidence checks and limitations"):
+        valid_label = "PASS" if r["valid"] else "FAIL"
+        st.markdown(f"**Constraint validity: {valid_label}**")
         if r["violations"]:
-            for v in r["violations"]:
-                st.caption(f"  - {v}")
-    with cols[1]:
-        condition_met = bool(r.get("evasion_condition", False))
-        icon = "✅" if condition_met else "❌"
-        st.markdown(f"{icon} **Evasion condition**: {r['msg']}")
+            for violation in r["violations"]:
+                st.caption(f"• {violation}")
+        st.markdown(f"**Prediction transition:** {r['msg']}")
         st.caption(
-            "This is a prediction-transition check, not proof that a real network "
-            "connection's behavior was physically preserved."
+            "A prediction transition is not proof that a real network connection's "
+            "behavior was physically preserved."
         )
 
     # Feature table — the key visualization
@@ -1137,7 +1154,7 @@ def render_attack():
 # ---------------------------------------------------------------------------
 def render_gallery():
     render_page_header(
-        "03 / Clean-set evidence",
+        "Results / Clean-set evidence",
         "Understand the results.",
         "Compare real held-out scores, see exactly what each model gets wrong, and find any saved clean-set comparison from supplied training augmentations.",
     )
@@ -1171,7 +1188,6 @@ def render_gallery():
             if model_results:
                 st.markdown("#### Compare the models")
                 render_results_overview(dataset, model_results)
-                render_clean_metric_chart(model_results)
                 animation_key = f"_results_landscape_seen_{dataset}"
                 render_clean_model_landscape(
                     model_results,
@@ -1190,7 +1206,6 @@ def render_gallery():
                     key=f"gallery_clean_model_{dataset}",
                 )
                 selected_metrics = model_results[selected_model]
-                render_clean_scoreboard(selected_metrics)
                 if all(
                     isinstance(selected_metrics.get(name), int)
                     and not isinstance(selected_metrics.get(name), bool)
@@ -1294,7 +1309,7 @@ def render_gallery():
 # ---------------------------------------------------------------------------
 def render_about():
     render_page_header(
-        "04 / Research notes",
+        "Research notes",
         "Robustness is a property to test.",
         "A reproducible research console for studying adversarial evasion in network intrusion detection.",
     )
