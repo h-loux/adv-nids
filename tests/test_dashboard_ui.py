@@ -153,7 +153,7 @@ def test_interactive_attack_kwargs_are_bounded(method):
 def test_interactive_attack_kwargs_clamp_malformed_high_budget():
     params = app._interactive_attack_kwargs("CW", 10_000)
 
-    assert params == {"n_steps": 5, "n_binary_search": 2, "n_project": 2}
+    assert params == {"n_steps": 3, "n_binary_search": 2, "n_project": 2}
 
 
 def test_interactive_attack_kwargs_reject_unknown_method():
