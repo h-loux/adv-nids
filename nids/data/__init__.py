@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import csv
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -43,8 +44,20 @@ def load_dataset(dataset: str, random_state: int = SPLIT_SEED) -> dict:
     test_path = PROCESSED_DIR / f"{dataset}_test.npz"
     meta_path = META_DIR / f"{dataset}_meta.json"
     if train_path.exists() and test_path.exists() and meta_path.exists():
-        with open(meta_path) as f:
-            return json.load(f)
+        try:
+            with np.load(train_path, allow_pickle=False) as train_data:
+                train_labels = np.asarray(train_data["y"])
+            with np.load(test_path, allow_pickle=False) as test_data:
+                test_labels = np.asarray(test_data["y"])
+            # Cached one-class splits cannot support binary intrusion detection.
+            if set(np.unique(train_labels)) == {BENIGN, ATTACK} and set(np.unique(test_labels)) == {BENIGN, ATTACK}:
+                with open(meta_path, encoding="utf-8") as f:
+                    return json.load(f)
+        except (OSError, KeyError, ValueError, EOFError):
+            pass
+        print(f"  Cached {dataset} splits are invalid or missing a class; rebuilding.")
+        for path in (train_path, test_path, meta_path):
+            path.unlink(missing_ok=True)
 
     if dataset == "cicids2017":
         _build_cicids2017(random_state)
@@ -572,21 +585,57 @@ def _build_unsw_nb15(random_state: int = SPLIT_SEED) -> None:
 
     raw = RAW_DIR / "unsw_nb15_raw.csv"
     if not raw.exists():
-        _download_url(
-            "https://research.unsw.edu.au/projects/datasets/unsw-nisw-nids15-data/unswnb15-datasets.zip",
-            RAW_DIR / "unsw_nb15.zip",
-        )
-        with zipfile.ZipFile(RAW_DIR / "unsw_nb15.zip") as z:
-            csv_name = [n for n in z.namelist() if n.endswith(".csv") and "NUSW" in n][0]
-            z.extract(csv_name, RAW_DIR)
-            Path(RAW_DIR / csv_name).rename(raw)
+        archive_path = RAW_DIR / "unsw_nb15.zip"
+        if not archive_path.exists():
+            _download_url(
+                "https://research.unsw.edu.au/projects/datasets/unsw-nisw-nids15-data/unswnb15-datasets.zip",
+                archive_path,
+            )
+        with zipfile.ZipFile(archive_path) as archive:
+            csv_names = sorted(
+                name for name in archive.namelist()
+                if Path(name).suffix.lower() == ".csv"
+                and Path(name).stem.lower().startswith(("unsw-nb15_", "nusw-nb15_"))
+                and Path(name).stem.rsplit("_", 1)[-1] in {"1", "2", "3", "4"}
+            )
+            if not csv_names:
+                raise ValueError(
+                    "UNSW-NB15 archive has no numbered UNSW-NB15_[1-4].csv partitions"
+                )
+            # The official dataset is split across four files with repeated headers.
+            # Stream them together so data is combined without holding the archive in RAM.
+            with raw.open("wb") as combined:
+                for index, csv_name in enumerate(csv_names):
+                    with archive.open(csv_name) as source:
+                        if index:
+                            source.readline()  # skip the repeated header
+                        shutil.copyfileobj(source, combined)
 
     df = pd.read_csv(raw)
     df.columns = df.columns.str.strip()
+    if "label" not in df.columns:
+        raise ValueError("UNSW-NB15 CSV is missing its label column")
 
-    y = (df["label"] == "Normal").astype(int).values
-    y = 1 - y  # 0=benign, 1=attack
-    y_family = df["label"].map(_UNSW_FAMILY).values
+    label_text = df["label"].astype(str).str.strip()
+    numeric_labels = pd.to_numeric(df["label"], errors="coerce")
+    if numeric_labels.notna().all() and set(numeric_labels.unique()) <= {0, 1}:
+        # Official UNSW-NB15 label encoding is 0=normal and 1=attack.
+        y = numeric_labels.to_numpy(dtype=np.int64)
+    else:
+        benign_labels = label_text.str.casefold().isin({"normal", "benign"})
+        y = np.where(benign_labels, BENIGN, ATTACK).astype(np.int64)
+
+    if set(np.unique(y)) != {BENIGN, ATTACK}:
+        raise ValueError(
+            "UNSW-NB15 label column must include both benign/normal and attack rows"
+        )
+
+    if "attack_cat" in df.columns:
+        y_family = df["attack_cat"].fillna("unknown").astype(str).to_numpy()
+        y_family[y == BENIGN] = "benign"
+    else:
+        y_family = label_text.to_numpy()
+        y_family[y == BENIGN] = "benign"
 
     feature_cols = [c for c in df.columns if c not in _UNSW_DROP and c not in ("label1", "attack_cat")]
     X = df[feature_cols].copy()
