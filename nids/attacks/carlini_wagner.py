@@ -91,10 +91,6 @@ def carlini_wagner(model, x_raw: np.ndarray, eps: float, mask: np.ndarray = None
         else:
             # sklearn models do not expose autograd; use numerical optimization.
             x_adv_scaled = _cw_sklearn(model, x_scaled, mask, c, n_steps, c_lr)
-        else:
-            # sklearn model: use gradient if available, else finite differences
-            x_adv_scaled = _cw_sklearn(model, x_scaled, mask, c, n_steps, c_lr)
-
         x_adv_raw = model.to_raw(x_adv_scaled)
 
         # Iterative projection: raw-space constraints ↔ scaled-space eps-ball
