@@ -633,10 +633,15 @@ def render_setup():
                 help="Expected a label, class, or target column and numeric feature columns."
             )
             if uploaded is not None:
-                ds_name = uploaded.name.replace(".csv", "")
+                ds_name = Path(uploaded.name).stem
                 new_ds = process_uploaded_csv(uploaded, ds_name)
                 if new_ds:
                     st.session_state["uploaded_dataset"] = new_ds
+                    # The available list was collected before processing this file.
+                    # Add it now so it can be selected in the same Streamlit run.
+                    if new_ds not in available:
+                        available.insert(0, new_ds)
+                    default_idx = available.index(new_ds)
 
             dataset = st.selectbox(
                 "Prepared dataset",
