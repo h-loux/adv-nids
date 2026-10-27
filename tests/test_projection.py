@@ -113,3 +113,27 @@ class TestProjection:
         # After projection, all values should be within bounds
         assert x_adv[0, 0] <= 2.0 + 1e-6
         assert x_adv[0, 1] >= -2.0 - 1e-6
+
+
+def test_one_hot_groups_accept_feature_names():
+    """UNSW metadata stores one-hot members as names, not integer indices."""
+    feature_names = ["proto=tcp", "proto=udp", "state=FIN", "state=CON"]
+    bounds = {
+        name: {"min": 0.0, "max": 1.0}
+        for name in feature_names
+    }
+    x_clean = np.array([[1.0, 0.0, 1.0, 0.0]])
+    x_adv = np.array([[0.1, 0.9, 0.6, 0.4]])
+    groups = {
+        "proto": ["proto=tcp", "proto=udp"],
+        "state": ["state=FIN", "state=CON"],
+    }
+
+    result = project(
+        x_adv, x_clean, eps=1.0,
+        mutable_mask=np.ones(4, dtype=bool),
+        bounds=bounds, one_hot_groups=groups,
+    )
+
+    np.testing.assert_array_equal(result[0, :2], [0.0, 1.0])
+    np.testing.assert_array_equal(result[0, 2:], [1.0, 0.0])
