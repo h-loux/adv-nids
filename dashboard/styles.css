@@ -2677,3 +2677,23 @@ body,
     transition: none !important;
   }
 }
+
+/* Make native segmented/slider controls feel integrated with the research console. */
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"],
+[data-testid="stSelectSlider"] [data-baseweb="slider"] [role="slider"] {
+  border-color: #62d9ff !important;
+  box-shadow: 0 0 0 4px rgba(98, 217, 255, .12) !important;
+}
+[data-testid="stSelectSlider"] [data-baseweb="slider"] {
+  padding-top: .35rem;
+}
+[data-testid="stSelectSlider"] [data-baseweb="slider"] [data-testid="stTickBar"] {
+  background: rgba(98, 217, 255, .24);
+}
+.setup-section-heading > span,
+.setup-control-heading .control-index {
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
