@@ -159,3 +159,19 @@ def test_interactive_attack_kwargs_clamp_malformed_high_budget():
 def test_interactive_attack_kwargs_reject_unknown_method():
     with pytest.raises(ValueError, match="Unsupported interactive method"):
         app._interactive_attack_kwargs("unknown", 3)
+
+
+def test_attack_outcome_prioritizes_invalid_perturbation(monkeypatch):
+    """An invalid perturbation must never be presented as a valid evasion."""
+    from dashboard import app
+
+    captured = {"warning": [], "error": [], "success": []}
+    monkeypatch.setattr(app.st, "warning", lambda message, **kwargs: captured["warning"].append(message))
+    monkeypatch.setattr(app.st, "error", lambda message, **kwargs: captured["error"].append(message))
+    monkeypatch.setattr(app.st, "success", lambda message, **kwargs: captured["success"].append(message))
+
+    # Exercise the status rendering helper so this can be tested without a live Streamlit session.
+    assert app._attack_outcome("evasion", valid=False)[0] == "invalid_after_flip"
+    assert app._attack_outcome("blocked", valid=False)[0] == "invalid"
+    assert app._attack_outcome("evasion", valid=True)[0] == "valid_evasion"
+    assert app._attack_outcome("blocked", valid=True)[0] == "not_evasion"
