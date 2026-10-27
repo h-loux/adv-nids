@@ -40,6 +40,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # CI uses CPU-only PyTorch; it does not have a CUDA device.
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.0"
           python -m pip install -r requirements.txt pytest
 
       - name: Verify Parquet engine import
