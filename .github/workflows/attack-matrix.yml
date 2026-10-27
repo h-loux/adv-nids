@@ -8,6 +8,7 @@ on:
       - ".github/workflows/attack-matrix.yml"
       - "scripts/validate_attack_matrix.py"
       - "nids/**"
+      - "dashboard/**"
       - "tests/**"
       - "requirements.txt"
       - "pyproject.toml"

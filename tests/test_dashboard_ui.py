@@ -1,4 +1,4 @@
-from dashboard import ui
+from dashboard import app, ui
 
 
 def test_clean_model_landscape_renders_actual_metrics_and_error_counts(monkeypatch):
@@ -123,3 +123,32 @@ class _ChartContainer:
 
     def __exit__(self, exc_type, exc, traceback):
         return False
+
+
+import pytest
+
+
+@pytest.mark.parametrize("method", ["FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"])
+def test_interactive_attack_kwargs_are_bounded(method):
+    params = app._interactive_attack_kwargs(method, 5)
+
+    assert all(isinstance(value, int) and value <= 10 for value in params.values())
+    if method == "CW":
+        assert params == {"n_steps": 5, "n_binary_search": 2, "n_project": 2}
+    elif method == "PGD":
+        assert params == {"n_steps": 5, "n_project": 2}
+    elif method == "NES":
+        assert params == {"n_queries": 40, "n_directions": 4, "n_steps": 5}
+    elif method in {"DeepFool", "JSMA"}:
+        assert params["n_steps"] == 5
+
+
+def test_interactive_attack_kwargs_clamp_malformed_high_budget():
+    params = app._interactive_attack_kwargs("CW", 10_000)
+
+    assert params == {"n_steps": 5, "n_binary_search": 2, "n_project": 2}
+
+
+def test_interactive_attack_kwargs_reject_unknown_method():
+    with pytest.raises(ValueError, match="Unsupported interactive method"):
+        app._interactive_attack_kwargs("unknown", 3)
