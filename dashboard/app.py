@@ -653,6 +653,24 @@ def render_setup():
 # ---------------------------------------------------------------------------
 # Tab: Attack Console
 # ---------------------------------------------------------------------------
+def _attack_outcome(evasion: bool, valid: bool) -> tuple[str, str]:
+    """Classify an experiment outcome without allowing invalid samples to pass."""
+    if not valid:
+        if evasion:
+            return (
+                "invalid_after_flip",
+                "Prediction flipped to benign, but perturbation constraints failed. "
+                "This is not a valid evasion result.",
+            )
+        return (
+            "invalid",
+            "Perturbation constraints failed. Do not use this run as robustness evidence.",
+        )
+    if evasion:
+        return ("valid_evasion", "A valid perturbation changed the prediction from attack to benign.")
+    return ("not_evasion", "No valid evasion was observed for this flow.")
+
+
 def _interactive_attack_kwargs(method: str, iteration_budget: int) -> dict:
     """Return deliberately bounded parameters for one interactive flow.
 
@@ -784,7 +802,9 @@ def render_attack():
                 pred_after = int(np.argmax(probs_after))
 
                 valid, violations = check_validity(x_adv, x_clean, meta, eps, model=vm)
-                _, behaviour_msg = check_behaviour_preserved(pred_before, pred_after, true_label)
+                evasion_condition, behaviour_msg = check_behaviour_preserved(
+                    pred_before, pred_after, true_label,
+                )
                 l1, linf = perturbation_magnitude(x_adv, x_clean)
                 diff = feature_diff(x_adv, x_clean, feature_names, top_n=10)
                 evasion = bool(pred_after == BENIGN and true_label == ATTACK and pred_before == ATTACK)
@@ -796,6 +816,7 @@ def render_attack():
 
                 st.session_state["result"] = dict(
                     evasion=evasion, valid=valid, violations=violations,
+                    evasion_condition=evasion_condition,
                     msg=behaviour_msg, label_before=LABEL_NAMES[pred_before],
                     label_after=LABEL_NAMES[pred_after],
                     probs_before={"benign": float(probs_before[0]), "attack": float(probs_before[1])},
@@ -824,13 +845,28 @@ def render_attack():
     st.markdown("---")
     st.subheader("Result — what happened?")
 
-    if r["evasion"]:
-        st.error("**Evasion succeeded** — the model now classifies this attack as benign.\n"
-                 f"P(attack): {r['probs_before']['attack']:.4f} → {r['probs_after']['attack']:.4f}")
-    elif not r["valid"]:
-        st.warning(f"Invalid — {len(r['violations'])} constraint violations")
+    # Validity takes precedence: an infeasible prediction flip is not success.
+    outcome, outcome_detail = _attack_outcome(r["evasion"], r["valid"])
+    if outcome == "invalid_after_flip":
+        st.warning(
+            "**Prediction flipped, but this is NOT a valid evasion.** "
+            f"The perturbation violates {len(r['violations'])} constraint(s); "
+            "do not count it as a successful result."
+        )
+    elif outcome == "invalid":
+        st.warning(
+            f"Invalid perturbation — {len(r['violations'])} constraint violation(s). "
+            "Do not use this run as robustness evidence."
+        )
+    elif outcome == "valid_evasion":
+        st.error(
+            "**Valid evasion succeeded** — the model now classifies this attack as benign.\n"
+            f"P(attack): {r['probs_before']['attack']:.4f} → {r['probs_after']['attack']:.4f}"
+        )
     else:
-        st.success(f"Blocked — model still says {r['label_after']}")
+        st.success(
+            f"No valid evasion observed — model still says {r['label_after']}."
+        )
 
     st.markdown("**After attack — model's new prediction**")
     col_e, col_f, col_g = st.columns(3)
@@ -865,9 +901,13 @@ def render_attack():
             for v in r["violations"]:
                 st.caption(f"  - {v}")
     with cols[1]:
-        ok = "preserved" in r["msg"].lower()
-        icon = "✅" if ok else "❌"
-        st.markdown(f"{icon} **Behaviour**: {r['msg']}")
+        condition_met = bool(r.get("evasion_condition", False))
+        icon = "✅" if condition_met else "❌"
+        st.markdown(f"{icon} **Evasion condition**: {r['msg']}")
+        st.caption(
+            "This is a prediction-transition check, not proof that a real network "
+            "connection's behavior was physically preserved."
+        )
 
     # Feature table — the key visualization
     st.markdown("---")
