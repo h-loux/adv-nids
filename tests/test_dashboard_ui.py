@@ -132,15 +132,22 @@ import pytest
 def test_interactive_attack_kwargs_are_bounded(method):
     params = app._interactive_attack_kwargs(method, 5)
 
-    assert all(isinstance(value, int) and value <= 10 for value in params.values())
+    assert params.get("n_steps", 0) <= 5
+    assert params.get("n_project", 0) <= 2
+    assert params.get("n_binary_search", 0) <= 2
+    assert params.get("n_queries", 0) <= 40
     if method == "CW":
         assert params == {"n_steps": 5, "n_binary_search": 2, "n_project": 2}
     elif method == "PGD":
         assert params == {"n_steps": 5, "n_project": 2}
     elif method == "NES":
         assert params == {"n_queries": 40, "n_directions": 4, "n_steps": 5}
-    elif method in {"DeepFool", "JSMA"}:
-        assert params["n_steps"] == 5
+    elif method == "JSMA":
+        assert params == {"n_steps": 5, "gamma": 0.1}
+    elif method == "DeepFool":
+        assert params == {"n_steps": 5}
+    elif method == "FGSM":
+        assert params == {}
 
 
 def test_interactive_attack_kwargs_clamp_malformed_high_budget():
