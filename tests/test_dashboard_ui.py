@@ -184,3 +184,16 @@ def test_attack_outcome_marks_clean_baseline_outlier_ineligible():
 
     assert outcome == "ineligible_baseline"
     assert "original clean flow" in detail
+
+
+def test_dashboard_html_escaping_is_imported_for_verdict_visualization():
+    assert app.escape("<malicious>") == "&lt;malicious&gt;"
+
+
+def test_flow_selection_uses_bounded_index_not_a_full_dataset_dropdown():
+    from pathlib import Path
+
+    source = Path(app.__file__).read_text(encoding="utf-8")
+    assert 'method = st.radio(' in source
+    assert 'label_filter = st.selectbox(' in source
+    assert 'options=list(idxs)' not in source
