@@ -96,6 +96,13 @@ def fit_model(
     victim = make_model(model_name, X_fit_scaled.shape[1], seed=seed)
     if model_params:
         victim.base.set_params(**model_params)
+    # Keep XGBoost execution on CPU even when inherited/model-supplied parameters
+    # came from a GPU-trained artifact. The dashboard and attack pipeline feed
+    # NumPy/CPU arrays, so a CUDA booster would trigger device-mismatch fallback.
+    if model_name == "xgb":
+        victim.base.set_params(device="cpu")
+    elif model_name == "ensemble":
+        victim.base.set_params(xgb__device="cpu")
     victim.set_scaler(scaler)
     victim.feature_names = list(meta["feature_names"])
     victim.mutable_mask = np.asarray(meta["mutable_mask"], dtype=bool)
