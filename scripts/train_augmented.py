@@ -129,7 +129,7 @@ def _load_or_train_baseline(
             dataset_meta,
             seed=seed,
             epochs=epochs,
-            batch_size=batch_size,
+            batch_size=batch_size or 256,
         )
     victim = _as_victim(artifact, model_name)
     return victim, artifact, trained_now
@@ -177,7 +177,11 @@ def _train_pair(
         else (baseline_artifact.get("batch_size") or 256)
     )
     model_params = baseline_artifact.get("model_params") or None
-    baseline_seed = int(baseline_artifact.get("seed") or args.seed)
+    baseline_seed = (
+        int(baseline_artifact["seed"])
+        if baseline_artifact.get("seed") is not None
+        else int(args.seed)
+    )
 
     print(
         f"  Generating {args.method} rows (eps={args.eps}, limit={args.max_samples})...",
@@ -350,6 +354,7 @@ def main(argv=None) -> int:
             model_path = ARTIFACTS_DIR / f"{dataset}_{model_name}_augmented.joblib"
             if (
                 not args.force
+                and not args.retrain_baselines
                 and result_path.is_file()
                 and model_path.is_file()
             ):
