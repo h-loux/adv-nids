@@ -1415,7 +1415,7 @@ def render_gallery():
                 chart = grouped.set_index("model")[["mean_raw_asr"]].rename(
                     columns={"mean_raw_asr": "Mean raw ASR"}
                 ) * 100
-                st.bar_chart(chart, horizontal=True)
+                st.bar_chart(chart)
                 display = grouped.copy()
                 display["mean_raw_asr"] = display["mean_raw_asr"].map(lambda value: f"{value:.1%}")
                 display["mean_validity_rate"] = display["mean_validity_rate"].map(

@@ -197,3 +197,63 @@ def test_flow_selection_uses_bounded_index_not_a_full_dataset_dropdown():
     assert 'method = st.radio(' in source
     assert 'label_filter = st.selectbox(' in source
     assert 'options=list(idxs)' not in source
+
+
+
+def test_evidence_checks_distinguish_invalid_flip_from_valid_evasion():
+    invalid_flip = app._build_evidence_checks({
+        "baseline_valid": True,
+        "valid": False,
+        "evasion": True,
+        "violations": ["epsilon exceeded"],
+        "baseline_violations": [],
+    })
+    assert invalid_flip[0]["state"] == "pass"
+    assert invalid_flip[1]["state"] == "fail"
+    assert invalid_flip[2]["label"] == "Cannot count as success"
+
+    valid_flip = app._build_evidence_checks({
+        "baseline_valid": True,
+        "valid": True,
+        "evasion": True,
+        "violations": [],
+        "baseline_violations": [],
+    })
+    assert valid_flip[2]["state"] == "pass"
+    assert valid_flip[2]["label"] == "Valid prediction flip"
+
+
+def test_attack_curve_loader_reads_actual_saved_asr_and_validity(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(app, "RESULTS_DIR", tmp_path)
+    folder = tmp_path / "E2"
+    folder.mkdir()
+    (folder / "demo_fgsm_asr.json").write_text(
+        json.dumps({
+            "rf": [
+                {"eps": 0.1, "asr": 0.4, "n": 25, "valid": 0.9},
+                {"eps": 0.2, "asr": 0.6, "n": 20, "valid": 0.8},
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    rows, found = app._load_attack_curve_results("demo")
+
+    assert found == ["FGSM"]
+    assert len(rows) == 2
+    assert rows[0]["model"] == "rf"
+    assert rows[0]["raw_asr"] == 0.4
+    assert rows[0]["valid_rate"] == 0.9
+    assert rows[1]["n"] == 20
+
+
+def test_gallery_source_has_explicit_rq1_rq2_rq3_tabs():
+    from pathlib import Path
+
+    source = Path(app.__file__).read_text(encoding="utf-8")
+    assert "RQ1 · Model vulnerability" in source
+    assert "RQ2 · Feature susceptibility" in source
+    assert "RQ3 · Adversarial training" in source
+    assert "does not by itself prove" in source

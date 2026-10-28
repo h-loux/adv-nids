@@ -2747,3 +2747,75 @@ body,
   font-size: 1.05rem;
   font-weight: 800;
 }
+
+
+/* Evidence checklist: distinct states, compact typography, no idle animation. */
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .75rem;
+  margin: .45rem 0 .7rem;
+}
+.evidence-check {
+  min-width: 0;
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: linear-gradient(145deg, rgba(19, 31, 50, .98), rgba(13, 22, 37, .98));
+  box-shadow: 0 8px 25px rgba(0, 0, 0, .15);
+}
+.evidence-check-top {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-bottom: .8rem;
+}
+.evidence-symbol {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 9px;
+  font-size: 1rem;
+  font-weight: 850;
+}
+.evidence-state {
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.evidence-check h4 {
+  margin: 0 0 .45rem;
+  color: var(--ink);
+  font-size: .98rem;
+  letter-spacing: -.015em;
+}
+.evidence-check p {
+  margin: 0;
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.55;
+}
+.evidence-pass { border-color: rgba(83, 224, 188, .32); }
+.evidence-pass .evidence-symbol,
+.evidence-pass .evidence-state { color: #69e9c1; }
+.evidence-pass .evidence-symbol { background: rgba(83, 224, 188, .08); }
+.evidence-warn { border-color: rgba(255, 209, 102, .38); }
+.evidence-warn .evidence-symbol,
+.evidence-warn .evidence-state { color: #ffd166; }
+.evidence-warn .evidence-symbol { background: rgba(255, 209, 102, .08); }
+.evidence-fail { border-color: rgba(255, 140, 130, .4); }
+.evidence-fail .evidence-symbol,
+.evidence-fail .evidence-state { color: #ff9e92; }
+.evidence-fail .evidence-symbol { background: rgba(255, 140, 130, .08); }
+.evidence-neutral { border-color: rgba(98, 217, 255, .28); }
+.evidence-neutral .evidence-symbol,
+.evidence-neutral .evidence-state { color: #8de5ff; }
+.evidence-neutral .evidence-symbol { background: rgba(98, 217, 255, .07); }
+
+@media (max-width: 860px) {
+  .evidence-grid { grid-template-columns: 1fr; }
+  .evidence-check { padding: .9rem; }
+}
