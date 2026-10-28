@@ -45,7 +45,8 @@ def make_model(name: str, n_features: int, seed: int = MODEL_SEEDS[0]):
         import xgboost as xgb
         return VictimModel(
             xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.1,
-                              random_state=seed, eval_metric="logloss"),
+                              random_state=seed, eval_metric="logloss",
+                              device="cpu"),
             is_torch=False, n_features=n_features)
     if name == "ensemble":
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
@@ -60,7 +61,7 @@ def make_model(name: str, n_features: int, seed: int = MODEL_SEEDS[0]):
                 )),
                 ("xgb", xgb.XGBClassifier(
                     n_estimators=200, max_depth=5, learning_rate=0.1,
-                    random_state=seed, eval_metric="logloss",
+                    random_state=seed, eval_metric="logloss", device="cpu",
                 )),
             ],
             voting="soft",
