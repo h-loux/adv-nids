@@ -550,6 +550,40 @@ def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
                 st.json(gen_stats)
 
         st.markdown("#### Step 2 · Train a separate comparison model")
+        # Neural networks use epochs; expose an independent value for augmented
+        # training instead of silently forcing the baseline's saved epoch count.
+        augmented_epochs = None
+        if model_name in {"mlp", "cnn1d"}:
+            saved_epochs = getattr(baseline, "epochs", None)
+            try:
+                default_augmented_epochs = int(saved_epochs) if saved_epochs is not None else 50
+            except (TypeError, ValueError, OverflowError):
+                default_augmented_epochs = 50
+            if not 1 <= default_augmented_epochs <= 500:
+                default_augmented_epochs = 50
+            augmented_epochs = st.number_input(
+                "Augmented deep-model epochs",
+                min_value=1,
+                max_value=500,
+                value=default_augmented_epochs,
+                step=1,
+                key=f"augmented_deep_epochs_{dataset}_{model_name}",
+                help=(
+                    "Used only when training an augmented MLP or 1D CNN. The default "
+                    "matches the baseline's saved epoch count, but you can choose a "
+                    "different value for this comparison model."
+                ),
+            )
+            st.caption(
+                f"Baseline used {default_augmented_epochs} epoch(s) by default. "
+                "Changing this value affects only the augmented model."
+            )
+        else:
+            st.caption(
+                "Epochs do not apply to this model type. The augmented comparison "
+                "will use the model's normal fitting procedure."
+            )
+
         augmented_file = st.file_uploader(
             "Precomputed training augmentations (.npz)",
             type=["npz"],
@@ -623,7 +657,10 @@ def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
                 # than passing None to int(), which aborts augmented-data training.
                 baseline_seed = int(getattr(baseline, "seed", None) or 0)
                 baseline_epochs = getattr(baseline, "epochs", None)
-                training_epochs = int(baseline_epochs or 50)
+                if model_name in {"mlp", "cnn1d"}:
+                    training_epochs = int(augmented_epochs or 50)
+                else:
+                    training_epochs = int(baseline_epochs or 50)
                 training_batch_size = int(getattr(baseline, "batch_size", None) or 256)
                 baseline_params = getattr(baseline, "model_params", {}) or None
 
