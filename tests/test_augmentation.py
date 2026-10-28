@@ -61,6 +61,40 @@ def test_generator_uses_only_detected_attack_training_rows_and_inherits_labels(m
     assert stats["data_scope"].endswith("held-out test split not used")
 
 
+def test_generator_stops_scanning_after_enough_candidates_are_found(monkeypatch):
+    model = _ToyModel()
+    original_predict_proba = model.predict_proba
+    prediction_batch_sizes = []
+
+    def tracking_predict_proba(X):
+        prediction_batch_sizes.append(len(X))
+        return original_predict_proba(X)
+
+    model.predict_proba = tracking_predict_proba
+
+    def fake_fgsm(model, source, eps, mask):
+        candidate = np.asarray(source).copy()
+        candidate[:, 0] += 0.1
+        return SimpleNamespace(x_adv=candidate)
+
+    monkeypatch.setattr(augmentation, "fgsm", fake_fgsm)
+    train = {
+        "X_raw": np.tile(np.array([[1.0, 1.0]]), (1500, 1)),
+        "y": np.ones(1500, dtype=np.int64),
+    }
+
+    generated, stats = augmentation.generate_adversarial_training_augmentations(
+        model, train, _meta(), method="FGSM", eps=0.2, max_samples=1, seed=7,
+    )
+
+    assert generated["X_raw"].shape == (1, 2)
+    assert prediction_batch_sizes[0] == 1024
+    assert stats["attack_training_rows_total"] == 1500
+    assert stats["attack_training_rows_scanned"] == 1024
+    assert stats["candidate_scan_complete"] is False
+    assert stats["eligible_candidates_found_before_cap"] >= 1
+
+
 def test_generator_refuses_when_no_attack_rows_are_correctly_detected():
     model = _ToyModel()
     train = {"X_raw": np.array([[1.0, 0.0], [11.0, 1.0]]), "y": np.array([0, 1])}
