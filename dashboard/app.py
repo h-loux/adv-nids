@@ -900,34 +900,23 @@ def render_attack():
     if label_filter == "Attack flows only":
         idxs = np.flatnonzero(y == ATTACK)
     else:
-        idxs = None
+        idxs = np.arange(len(y))
 
-    available_count = len(y) if idxs is None else len(idxs)
-    if available_count == 0:
+    if len(idxs) == 0:
         st.warning("No flows match this filter in the selected test split.")
         return
 
-    # Avoid materializing thousands of selectbox options on large datasets.
-    flow_key = f"flow_offset_{dataset}_{'attack' if idxs is not None else 'all'}"
-    safe_default = min(int(st.session_state.get(flow_key, 0)), available_count - 1)
-    flow_offset = st.number_input(
-        "Position in this cohort (0 = first flow)",
-        min_value=0,
-        max_value=available_count - 1,
-        value=safe_default,
-        step=1,
-        key=flow_key,
-        help=(
-            "This is the zero-based position within the selected cohort, not a packet ID "
-            "or feature number. Position 0 means the first flow in this cohort. "
-            "The caption below shows its actual row index in the held-out test array."
+    # Keep flow selection familiar: choose the held-out row directly from a dropdown.
+    cohort_key = "attack" if label_filter == "Attack flows only" else "all"
+    idx = st.selectbox(
+        "Select flow",
+        options=idxs.tolist(),
+        format_func=lambda row: (
+            f"#{int(row):04d} · {LABEL_NAMES[int(y[int(row)])]} · {families[int(row)]}"
         ),
+        key=f"flow_idx_{dataset}_{cohort_key}",
+        help="Choose a held-out flow by its row number, true label, and attack family.",
     )
-    st.caption(
-        f"Flow {int(flow_offset) + 1:,} of {available_count:,} in this cohort. "
-        "The selected row number below is the row used for evaluation."
-    )
-    idx = int(flow_offset) if idxs is None else int(idxs[int(flow_offset)])
     st.caption(
         f"Selected held-out row #{idx:,} · true class: {LABEL_NAMES[int(y[idx])]} · "
         f"family: {families[idx]}"
