@@ -2568,34 +2568,27 @@ body,
 }
 
 
-/* Quiet motion language shared across every workspace, not just the setup hero. */
-@keyframes ambient-breathe {
-  0%, 100% { transform: translateY(0); box-shadow: 0 0 0 rgba(98, 217, 255, 0); }
-  50% { transform: translateY(-2px); box-shadow: 0 10px 34px rgba(98, 217, 255, 0.055); }
-}
-@keyframes ambient-sheen {
-  0% { background-position: 0% 50%; }
-  100% { background-position: 100% 50%; }
-}
+/* Light, one-shot entrance motion keeps the workspace polished without idle GPU work. */
 .page-heading {
-  background-size: 180% 180%;
-  animation: ambient-sheen 18s ease-in-out infinite alternate;
+  background-size: auto;
+  animation: results-arrive 420ms var(--ease-out) both;
 }
 .page-heading::after {
-  animation: ambient-breathe 9s ease-in-out infinite;
+  animation: score-orbit 760ms var(--ease-out) both;
+  transform-origin: center;
 }
 .profile-panel,
 .pred-card,
-.verdict-journey,
 .clean-comparison,
 .landscape-quality,
-.landscape-errors {
-  animation: ambient-breathe 10s ease-in-out infinite;
+.landscape-errors,
+.verdict-journey {
+  animation: results-arrive 380ms var(--ease-out) both;
 }
-.profile-panel { animation-delay: -2s; }
-.pred-card { animation-delay: -4s; }
-.verdict-journey { animation-delay: -1s; }
-.landscape-errors { animation-delay: -3s; }
+.profile-panel { animation-delay: 30ms; }
+.pred-card { animation-delay: 50ms; }
+.verdict-journey { animation-delay: 70ms; }
+
 .verdict-journey {
   margin: 1rem 0 1.5rem;
   padding: 1.35rem 1.5rem;
@@ -2655,24 +2648,81 @@ body,
   display: block; height: 100%; border-radius: inherit;
   background: linear-gradient(90deg, #3b8ed2, #62d9ff);
   box-shadow: 0 0 15px rgba(98, 217, 255, .22);
-  transition: width 800ms cubic-bezier(.2,.75,.25,1);
+  transition: width 460ms cubic-bezier(.2,.75,.25,1);
 }
 .verdict-track-row.after .verdict-track i {
   background: linear-gradient(90deg, #7766d9, #9d8bff);
 }
 .verdict-number { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 .verdict-foot { display: flex; justify-content: space-between; gap: .5rem; margin-top: 1.25rem; color: var(--muted); font-size: .72rem; }
+
+/* Radio buttons remain native/accessible, but read as selectable method cards. */
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: .45rem;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"] {
+  box-sizing: border-box;
+  min-width: max-content;
+  padding: 0 !important;
+  border-radius: 12px;
+  cursor: pointer;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"] > div {
+  min-height: 2.65rem;
+  box-sizing: border-box;
+  align-items: center;
+  padding: .25rem .8rem;
+  border: 1px solid rgba(112, 143, 184, .28);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(18, 30, 48, .94), rgba(18, 27, 45, .94));
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"] > div > div:first-child {
+  margin-right: .5rem;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"] p {
+  margin: 0;
+  color: #c0cde0;
+  font-size: .88rem;
+  font-weight: 620;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"]:hover > div {
+  border-color: rgba(98, 217, 255, .55);
+  background: #172941;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"][data-selected="true"] > div {
+  border-color: rgba(98, 217, 255, .72);
+  background: linear-gradient(120deg, #12374a, #202344);
+  box-shadow: 0 0 0 1px rgba(98, 217, 255, .10), 0 6px 16px rgba(0, 0, 0, .18);
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"][data-selected="true"] p {
+  color: #f0fbff;
+  font-weight: 760;
+}
+[data-testid="stRadioGroup"]:not([aria-label="Workspace"]) [data-testid="stRadioOption"]:focus-within > div {
+  outline: 2px solid rgba(98, 217, 255, .65);
+  outline-offset: 2px;
+}
 @media (max-width: 700px) {
   .verdict-journey-head { flex-direction: column; }
-  .verdict-track-row { grid-template-columns: minmax(120px, 1fr) 56px; gap: .65rem; }
+  .verdict-track-row { grid-template-columns: minmax(0, 1fr) 56px; gap: .65rem; }
   .verdict-stage { grid-column: 1 / -1; }
   .verdict-track { grid-column: 1; }
   .verdict-number { grid-column: 2; grid-row: 2; }
   .verdict-foot { font-size: .62rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .page-heading, .page-heading::after, .profile-panel, .pred-card,
-  .verdict-journey, .clean-comparison, .landscape-quality, .landscape-errors {
+  .page-heading,
+  .page-heading::after,
+  .profile-panel,
+  .pred-card,
+  .verdict-journey,
+  .clean-comparison,
+  .landscape-quality,
+  .landscape-errors {
     animation: none !important;
     transition: none !important;
   }
