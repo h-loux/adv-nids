@@ -75,7 +75,7 @@ The ensemble averages predicted class probabilities from Logistic Regression, Ra
 To generate training-only FGSM/PGD augmentations and train the augmented comparison model for every model on both real datasets:
 
 ```bash
-python -m scripts.train_augmented --datasets cicids2017 unsw_nb15 --models lr rf xgb mlp cnn1d ensemble --method FGSM --eps 0.2 --max-samples 32
+python -m scripts.train_augmented --datasets cicids2017 unsw_nb15 --models lr rf xgb mlp cnn1d ensemble --method FGSM --eps 0.2 --max-samples 32 --force
 ```
 
 The command reuses compatible clean baseline artifacts and trains a baseline only when one is missing or incompatible. For MLP/CNN1D it uses the saved baseline epoch count where available, or 20 epochs for a newly trained baseline. It continues after individual model failures, skips pairs whose augmented artifact and comparison JSON already exist, and writes a batch summary to `results/E9/batch_augmented_training_summary.json`. Add `--force` to rerun augmented jobs, `--retrain-baselines` to retrain/overwrite clean baseline artifacts, or `--epochs 20` to explicitly set neural-model epochs for the batch. The generator uses only the clean training split; each pair's augmented model is compared on the held-out clean test split. This clean comparison is not, by itself, evidence of improved adversarial robustness.
