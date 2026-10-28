@@ -154,6 +154,14 @@ def test_ensemble_uses_soft_voting():
     assert ensemble.is_torch is False
 
 
+def test_xgboost_models_default_to_cpu_device():
+    xgb_model = make_model("xgb", n_features=4)
+    ensemble = make_model("ensemble", n_features=4)
+
+    assert xgb_model.base.get_params()["device"] == "cpu"
+    assert ensemble.base.get_params(deep=True)["xgb__device"] == "cpu"
+
+
 def test_load_dataset_rebuilds_when_training_split_is_missing(tmp_path, monkeypatch):
     processed = tmp_path / "processed"
     metadata = tmp_path / "meta"
