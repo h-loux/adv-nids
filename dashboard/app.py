@@ -42,6 +42,7 @@ from nids.config import EPS_GRID, LABEL_NAMES, BENIGN, ATTACK, ALL_MODELS
 from nids.data import get_meta, get_test_arrays, get_train_arrays, load_dataset
 from nids.models import VictimModel
 from nids.training import train_and_save_model, train_augmented_and_save_model
+from nids.augmentation import generate_adversarial_training_augmentations
 from nids.attacks import fgsm, pgd, cw, deepfool, jsma, nes_attack
 from nids.eval.validity import (
     check_validity, check_behaviour_preserved, perturbation_magnitude, feature_diff,
@@ -414,35 +415,176 @@ def _has_comparison_metrics(metrics) -> bool:
 
 
 def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
-    """Offer a separate clean-evaluation run using user-supplied training rows."""
+    """Generate/use training-only augmentations and compare a separately trained model."""
     result_path = _clean_comparison_path(dataset, model_name)
+    generation_key = f"generated_augmented_{dataset}_{model_name}"
     with st.expander(
         "Train a separate model from supplied training augmentations",
         expanded=True,
     ):
         st.markdown(
-            "Use this workflow to compare the baseline with a model trained on "
-            "augmentations you already prepared. Upload an NPZ containing "
-            "`X_raw` (rows × features), `y` (labels), and `source_indices` "
-            "(source row in the selected clean training split). The labels must "
-            "match their source rows. This page does not generate augmentations; "
-            "review their validity and provenance before training."
+            "Generate training-time examples from the clean training split, then train a separate model "
+            "on clean rows plus those examples. The original baseline model is preserved."
         )
+        st.markdown("#### Step 1 · Generate perturbed training examples")
+        st.markdown(
+            "- The generator selects malicious **training** rows the baseline currently detects as attacks. "
+            "- FGSM or PGD nudges numeric features toward the model's benign decision region. "
+            "- The project's projection/validity checks enforce the configured epsilon budget, feature bounds, "
+            "immutable features, integer features, and one-hot encoding rules. "
+            "- Valid changed rows keep their original attack label. The held-out test split is never used."
+        )
+        st.warning(
+            "These checks validate configured feature constraints, not real-world behavioral equivalence. "
+            "The generated file is a starting point for adversarial training; final RQ3 evidence still needs "
+            "a matched adversarial evaluation of baseline and retrained models."
+        )
+        gen_col1, gen_col2 = st.columns(2)
+        with gen_col1:
+            generation_method = st.selectbox(
+                "Generation method", ["FGSM", "PGD"],
+                key=f"aug_generation_method_{dataset}_{model_name}",
+            )
+            generation_eps = st.select_slider(
+                "Epsilon budget (scaled features)",
+                options=EPS_GRID,
+                value=0.1 if 0.1 in EPS_GRID else EPS_GRID[0],
+                key=f"aug_generation_eps_{dataset}_{model_name}",
+            )
+        with gen_col2:
+            generation_count = st.slider(
+                "Maximum source rows", min_value=1, max_value=32, value=8, step=1,
+                key=f"aug_generation_count_{dataset}_{model_name}",
+                help="Small batches keep the interactive workflow responsive.",
+            )
+            generation_steps = st.slider(
+                "PGD steps", min_value=2, max_value=8, value=4, step=1,
+                key=f"aug_generation_steps_{dataset}_{model_name}",
+                disabled=generation_method != "PGD",
+            )
+        if st.button(
+            "Generate training augmentations",
+            key=f"generate_augmented_{dataset}_{model_name}",
+            type="secondary",
+        ):
+            try:
+                load_dataset(dataset)
+                generation_train = get_train_arrays(dataset)
+                generation_meta = get_meta(dataset)
+                baseline_meta = getattr(baseline, "meta", {}) or {}
+                baseline_source_hash = baseline_meta.get("source_hash")
+                current_source_hash = generation_meta.get("source_hash")
+                if (
+                    baseline_source_hash and current_source_hash
+                    and baseline_source_hash != current_source_hash
+                ):
+                    raise ValueError(
+                        "The loaded baseline was trained from a different dataset source. "
+                        "Refresh the clean baseline before generating samples."
+                    )
+                if list(baseline.feature_names or []) != list(generation_meta["feature_names"]):
+                    raise ValueError(
+                        "The baseline feature order does not match the selected dataset."
+                    )
+                expected_scaler = StandardScaler().fit(generation_train["X_raw"])
+                baseline_scaler = getattr(baseline, "scaler_", None)
+                if (
+                    baseline_scaler is None
+                    or not np.allclose(baseline_scaler.mean_, expected_scaler.mean_)
+                    or not np.allclose(baseline_scaler.scale_, expected_scaler.scale_)
+                ):
+                    raise ValueError(
+                        "Baseline preprocessing differs from the selected training split. "
+                        "Refresh/retrain the baseline, then generate again."
+                    )
+                with st.status("Generating and validating training rows...", expanded=True) as status:
+                    status.write("Selecting correctly detected malicious rows from the training split...")
+                    generated_arrays, generated_stats = generate_adversarial_training_augmentations(
+                        baseline,
+                        generation_train,
+                        generation_meta,
+                        method=generation_method,
+                        eps=float(generation_eps),
+                        max_samples=int(generation_count),
+                        seed=7,
+                        pgd_steps=int(generation_steps),
+                    )
+                    archive_buffer = io.BytesIO()
+                    np.savez_compressed(archive_buffer, **generated_arrays)
+                    st.session_state[generation_key] = {
+                        "bytes": archive_buffer.getvalue(),
+                        "stats": generated_stats,
+                        "dataset": dataset,
+                        "model": model_name,
+                        "method": generation_method,
+                        "eps": float(generation_eps),
+                    }
+                    status.update(
+                        label=f"Generated {generated_stats['generated_valid_rows']} validated rows",
+                        state="complete",
+                    )
+            except (
+                OSError, ValueError, KeyError, TypeError, ImportError, RuntimeError,
+            ) as exc:
+                st.error(f"Augmentation generation failed: {exc}")
+
+        generated_archive = st.session_state.get(generation_key)
+        if generated_archive:
+            gen_stats = generated_archive["stats"]
+            st.success(
+                f"Generated {gen_stats['generated_valid_rows']} valid changed rows; "
+                f"{gen_stats['valid_candidates_predicted_benign']} are classified as benign by the baseline."
+            )
+            st.caption(
+                f"Method: {gen_stats['method']} · ε={gen_stats['epsilon_scaled']} · "
+                f"seed={gen_stats['seed']} · train split only"
+            )
+            st.download_button(
+                "Download generated .npz",
+                data=generated_archive["bytes"],
+                file_name=f"{dataset}_{model_name}_{gen_stats['method'].lower()}_training_augmentations.npz",
+                mime="application/octet-stream",
+                key=f"download_augmented_{dataset}_{model_name}",
+            )
+            with st.expander("Generation diagnostics"):
+                st.json(gen_stats)
+
+        st.markdown("#### Step 2 · Train a separate comparison model")
         augmented_file = st.file_uploader(
             "Precomputed training augmentations (.npz)",
             type=["npz"],
             key=f"augmented_training_file_{dataset}_{model_name}",
             help="Required arrays: X_raw (N x features), y (N,), source_indices (N,).",
         )
+        training_sources = []
+        if generated_archive:
+            training_sources.append("Generated in this session")
+        if augmented_file is not None:
+            training_sources.append("Uploaded .npz")
+        training_source = None
+        if len(training_sources) > 1:
+            training_source = st.radio(
+                "Augmentation file to train with",
+                options=training_sources,
+                key=f"augmented_training_source_{dataset}_{model_name}",
+                horizontal=True,
+            )
+        elif training_sources:
+            training_source = training_sources[0]
+
         if st.button(
             "Train separate comparison model",
-            disabled=augmented_file is None,
+            disabled=training_source is None,
             key=f"train_augmented_{dataset}_{model_name}",
             type="secondary",
         ):
             try:
+                if training_source == "Generated in this session":
+                    archive_contents = generated_archive["bytes"]
+                else:
+                    archive_contents = augmented_file.getvalue()
                 augmented_arrays, archive_digest = _read_augmented_training_archive(
-                    augmented_file.getvalue()
+                    archive_contents
                 )
                 load_dataset(dataset)
                 train_arrays = get_train_arrays(dataset)
