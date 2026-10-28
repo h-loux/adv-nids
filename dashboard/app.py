@@ -562,15 +562,16 @@ def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
         if augmented_file is not None:
             training_sources.append("Uploaded .npz")
         training_source = None
-        if len(training_sources) > 1:
+        if training_sources:
+            # Always show the source selector when a generated archive exists;
+            # do not require a second, uploaded file just to reveal this control.
             training_source = st.radio(
                 "Augmentation file to train with",
                 options=training_sources,
+                index=0,
                 key=f"augmented_training_source_{dataset}_{model_name}",
                 horizontal=True,
             )
-        elif training_sources:
-            training_source = training_sources[0]
 
         if st.button(
             "Train separate comparison model",
