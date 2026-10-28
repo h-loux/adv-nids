@@ -1486,7 +1486,7 @@ def render_gallery():
             chart = features.set_index("feature")[["absolute_change"]].rename(
                 columns={"absolute_change": "Absolute feature change"}
             )
-            st.bar_chart(chart, horizontal=True)
+            st.bar_chart(chart)
             display = features[["feature", "before", "after", "signed_change", "absolute_change"]].rename(
                 columns={
                     "feature": "Feature",
@@ -1581,12 +1581,15 @@ def render_gallery():
         if clean_results:
             render_results_overview(dataset, clean_results)
             render_clean_model_landscape(clean_results, animate=False)
+            clean_model_options = sorted(clean_results)
+            best_clean_model = max(
+                clean_results,
+                key=lambda model: float(clean_results[model]["f1"]),
+            )
             selected_model = st.selectbox(
                 "Inspect clean-set errors",
-                options=sorted(clean_results),
-                index=sorted(clean_results, key=lambda model: clean_results[model]["f1"], reverse=True).index(
-                    max(clean_results, key=lambda model: clean_results[model]["f1"])
-                ),
+                options=clean_model_options,
+                index=clean_model_options.index(best_clean_model),
                 key=f"gallery_clean_model_{dataset}",
             )
             metrics = clean_results[selected_model]
