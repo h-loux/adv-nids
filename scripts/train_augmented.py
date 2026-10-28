@@ -331,6 +331,19 @@ def main(argv=None) -> int:
         parser.error("--epochs must be positive")
 
     summary = []
+    summary_path = RESULTS_DIR / "E9" / "batch_augmented_training_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def save_progress() -> None:
+        """Persist the current state after each model so interrupted runs are auditable."""
+        temp_path = summary_path.with_suffix(".tmp")
+        with temp_path.open("w", encoding="utf-8") as stream:
+            json.dump(
+                {"method": args.method, "eps": args.eps, "summary": summary},
+                stream, indent=2, default=str,
+            )
+        temp_path.replace(summary_path)
+
     total = len(args.datasets) * len(args.models)
     done = 0
     failures = 0
@@ -351,6 +364,7 @@ def main(argv=None) -> int:
             for model_name in args.models:
                 summary.append({"dataset": dataset, "model": model_name,
                                 "status": "failed", "error": message})
+            save_progress()
             continue
 
         for model_name in args.models:
@@ -368,6 +382,7 @@ def main(argv=None) -> int:
                                 "status": "skipped_existing",
                                 "result_file": str(result_path),
                                 "model_file": str(model_path)})
+                save_progress()
                 continue
             print(f"\n[{done}/{total}] {dataset}/{model_name}", flush=True)
             try:
@@ -393,15 +408,8 @@ def main(argv=None) -> int:
                     "error": message,
                 })
             finally:
+                save_progress()
                 print(f"Progress: {done}/{total} pairs visited.", flush=True)
-
-    summary_path = RESULTS_DIR / "E9" / "batch_augmented_training_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with summary_path.open("w", encoding="utf-8") as stream:
-        json.dump(
-            {"method": args.method, "eps": args.eps, "summary": summary},
-            stream, indent=2, default=str,
-        )
 
     successes = sum(record.get("status") == "success" for record in summary)
     skipped = sum(record.get("status") == "skipped_existing" for record in summary)
