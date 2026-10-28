@@ -65,8 +65,22 @@ def generate_adversarial_training_augmentations(
     if mutable_mask.shape != (X.shape[1],):
         raise ValueError("Model mutable-feature mask does not match training features.")
 
-    train_predictions = np.argmax(model.predict_proba(X), axis=1)
-    eligible = np.flatnonzero((y == ATTACK) & (train_predictions == ATTACK))
+    # Scan only attack rows in bounded chunks. CICIDS2017/UNSW-NB15 can be
+    # large; predicting the entire training matrix at once wastes RAM during
+    # the overnight batch that repeats this step for many models.
+    attack_indices = np.flatnonzero(y == ATTACK)
+    eligible_parts = []
+    prediction_batch_size = 4096
+    for start in range(0, len(attack_indices), prediction_batch_size):
+        row_indices = attack_indices[start:start + prediction_batch_size]
+        row_predictions = np.argmax(model.predict_proba(X[row_indices]), axis=1)
+        correctly_detected = row_indices[row_predictions == ATTACK]
+        if len(correctly_detected):
+            eligible_parts.append(correctly_detected)
+    eligible = (
+        np.concatenate(eligible_parts).astype(np.int64, copy=False)
+        if eligible_parts else np.empty(0, dtype=np.int64)
+    )
     if len(eligible) == 0:
         raise ValueError(
             "No correctly detected malicious rows exist in this training split for "
