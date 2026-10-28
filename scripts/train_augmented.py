@@ -136,7 +136,12 @@ def _load_or_train_baseline(
 
 
 def _metrics(model: VictimModel, test_arrays: dict) -> dict:
-    probabilities = model.predict_proba(test_arrays["X_raw"])
+    # Avoid materializing a scaled copy of a very large held-out feature matrix.
+    X = test_arrays["X_raw"]
+    probability_parts = []
+    for start in range(0, len(X), 8192):
+        probability_parts.append(model.predict_proba(X[start:start + 8192]))
+    probabilities = np.vstack(probability_parts)
     predictions = np.argmax(probabilities, axis=1)
     return compute_metrics(test_arrays["y"], predictions, probabilities)
 
