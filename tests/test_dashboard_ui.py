@@ -190,13 +190,15 @@ def test_dashboard_html_escaping_is_imported_for_verdict_visualization():
     assert app.escape("<malicious>") == "&lt;malicious&gt;"
 
 
-def test_flow_selection_uses_bounded_index_not_a_full_dataset_dropdown():
+def test_flow_selection_uses_dropdown_and_attack_methods_remain_radios():
     from pathlib import Path
 
     source = Path(app.__file__).read_text(encoding="utf-8")
     assert 'method = st.radio(' in source
     assert 'label_filter = st.selectbox(' in source
-    assert 'options=list(idxs)' not in source
+    assert '"Select flow"' in source
+    assert 'options=idxs.tolist()' in source
+    assert 'Position in this cohort' not in source
 
 
 
