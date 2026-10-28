@@ -323,6 +323,15 @@ def load_model(dataset: str, model_name: str):
             f"  python -m scripts.pretrain --dataset {dataset} --models {model_name}"
         )
     artifact = joblib.load(path)
+    # Artifacts trained with CUDA settings may still be loaded into this
+    # CPU/NumPy-based dashboard and attack pipeline. Switch XGBoost inference
+    # to CPU explicitly before wrapping the model.
+    if model_name == "xgb":
+        artifact["model"].set_params(device="cpu")
+    elif model_name == "ensemble":
+        for fitted_estimator in getattr(artifact["model"], "estimators_", []):
+            if fitted_estimator.__class__.__module__.lower().startswith("xgboost"):
+                fitted_estimator.set_params(device="cpu")
     vm = VictimModel(
         artifact["model"],
         is_torch=artifact["is_torch"],
