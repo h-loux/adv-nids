@@ -99,7 +99,14 @@ def generate_adversarial_training_augmentations(
             invalid_rejected += 1
             violation_examples.append("Attack returned a malformed or non-finite sample")
             continue
-        if np.allclose(candidate, source.reshape(-1), rtol=0.0, atol=1e-10):
+        source_row = source.reshape(-1)
+        if (
+            np.allclose(candidate, source_row, rtol=0.0, atol=1e-10)
+            # The trainer deliberately converts flow features to float32. A
+            # smaller float64-only change would disappear at training time and
+            # later be rejected as an unchanged augmentation.
+            or np.array_equal(candidate.astype(np.float32), source_row.astype(np.float32))
+        ):
             unchanged_rejected += 1
             continue
 
