@@ -79,3 +79,26 @@ def test_generator_rejects_unknown_method():
             _meta(),
             method="CW",
         )
+
+def test_generator_rejects_changes_that_disappear_at_float32_training_precision(monkeypatch):
+    def fake_fgsm(model, source, eps, mask):
+        candidate = np.asarray(source).copy()
+        # First eligible row has a tiny float64-only difference that rounds
+        # back to the original float32 value. The second has a real change.
+        candidate[:, 0] += 1e-9 if source[0, 0] == 1.0 else 0.1
+        return SimpleNamespace(x_adv=candidate)
+
+    monkeypatch.setattr(augmentation, "fgsm", fake_fgsm)
+    train = {
+        "X_raw": np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]),
+        "y": np.array([0, 1, 1]),
+    }
+
+    generated, stats = augmentation.generate_adversarial_training_augmentations(
+        _ToyModel(), train, _meta(), method="FGSM", eps=0.2, max_samples=8, seed=7,
+    )
+
+    assert generated["X_raw"].shape == (1, 2)
+    np.testing.assert_array_equal(generated["source_indices"], np.array([2]))
+    assert stats["unchanged_rejected"] == 1
+
