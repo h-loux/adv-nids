@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import dashboard.ui as ui
+
 from dashboard.ui import (
     apply_design_system,
     render_metric_cards,
@@ -909,13 +911,21 @@ def render_attack():
     flow_key = f"flow_offset_{dataset}_{'attack' if idxs is not None else 'all'}"
     safe_default = min(int(st.session_state.get(flow_key, 0)), available_count - 1)
     flow_offset = st.number_input(
-        "Flow index in this cohort",
+        "Position in this cohort (0 = first flow)",
         min_value=0,
         max_value=available_count - 1,
         value=safe_default,
         step=1,
         key=flow_key,
-        help=f"Choose 0 to {available_count - 1:,}. This avoids rendering every test row in a dropdown.",
+        help=(
+            "This is the zero-based position within the selected cohort, not a packet ID "
+            "or feature number. Position 0 means the first flow in this cohort. "
+            "The caption below shows its actual row index in the held-out test array."
+        ),
+    )
+    st.caption(
+        f"Flow {int(flow_offset) + 1:,} of {available_count:,} in this cohort. "
+        "The selected row number below is the row used for evaluation."
     )
     idx = int(flow_offset) if idxs is None else int(idxs[int(flow_offset)])
     st.caption(
@@ -1025,6 +1035,8 @@ def render_attack():
                     x_clean=x_clean, x_adv=x_adv, true_label=true_label,
                     mutable_mask=mutable_mask, feature_names=feature_names,
                     eps=eps, method=method, queries=queries,
+                    dataset=dataset, model=st.session_state.get("model_name", "unknown"),
+                    flow_index=int(idx),
                 )
                 status.update(label=f"✓ {method} evaluation complete", state="complete",
                               expanded=False)
@@ -1118,36 +1130,33 @@ def render_attack():
         ("Queries", f"{r.get('queries', 0):,}", "Model evaluations"),
     ])
 
-    with st.expander("Evidence checks and limitations"):
-        valid_label = "PASS" if r["valid"] else "FAIL"
-        st.markdown(f"**Constraint validity: {valid_label}**")
-        if r["violations"]:
-            for violation in r["violations"]:
-                st.caption(f"• {violation}")
-        st.markdown(f"**Prediction transition:** {r['msg']}")
-        st.caption(
-            "A prediction transition is not proof that a real network connection's "
-            "behavior was physically preserved."
-        )
+    with st.expander("Evidence checks and limitations", expanded=True):
+        _render_evidence_checks(r)
 
     # Feature table — the key visualization
     st.markdown("---")
     st.markdown(f"**Which features did the attack change? (top {len(r['diff'])})**")
-    st.caption("The attack pushes on the features the model relies on most. "
-               "Positive delta (cyan) = increased; Negative delta (red) = decreased.")
+    st.caption(
+        "This is a per-flow change report, not a dataset-wide feature-susceptibility ranking. "
+        "Change is signed (after − before); magnitude is its absolute size."
+    )
 
     diff_df = pd.DataFrame(r["diff"])
     if len(diff_df) == 0 or "delta" not in diff_df.columns:
         st.caption("No features were modified by the attack (or perturbation was below threshold).")
     else:
-        def color_delta(val):
+        diff_df["change"] = diff_df["after"] - diff_df["before"]
+        display_df = diff_df[["feature", "before", "after", "change", "delta"]].rename(
+            columns={"delta": "absolute change"}
+        )
+        def color_change(val):
             if isinstance(val, (int, float)):
                 if val > 0:
                     return "color: #70dcff"
                 elif val < 0:
                     return "color: #ff9e92"
             return ""
-        styled = diff_df.style.map(color_delta, subset=["delta"])
+        styled = display_df.style.map(color_change, subset=["change"])
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Gradient magnitudes are a white-box diagnostic, not part of NES.
@@ -1169,156 +1178,436 @@ def render_attack():
 # ---------------------------------------------------------------------------
 # Tab: Results Gallery
 # ---------------------------------------------------------------------------
-def render_gallery():
-    render_page_header(
-        "Results / Clean-set evidence",
-        "Understand the results.",
-        "Compare real held-out scores, see exactly what each model gets wrong, and find any saved clean-set comparison from supplied training augmentations.",
-    )
-    dataset = st.session_state.get("dataset", "dummy")
+def _load_clean_model_results(dataset: str) -> tuple[dict, str | None]:
+    """Load validated clean metrics for the selected dataset, if present."""
+    path = RESULTS_DIR / "E1" / f"{dataset}_clean_metrics.json"
+    if not path.is_file():
+        return {}, None
+    try:
+        with path.open(encoding="utf-8") as result_file:
+            data = json.load(result_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"Could not read {path.name}: {exc}"
+    if not isinstance(data, dict):
+        return {}, f"{path.name} does not contain a model-to-metrics object."
 
-    e1_path = RESULTS_DIR / "E1" / f"{dataset}_clean_metrics.json"
-    if e1_path.exists():
-        st.markdown("### Clean model evaluation")
+    required = ("accuracy", "f1", "recall", "auroc")
+    cleaned = {}
+    for model, metrics in data.items():
+        if (
+            isinstance(model, str)
+            and isinstance(metrics, dict)
+            and all(
+                isinstance(metrics.get(name), (int, float))
+                and not isinstance(metrics.get(name), bool)
+                and np.isfinite(metrics[name])
+                and 0 <= metrics[name] <= 1
+                for name in required
+            )
+        ):
+            cleaned[model] = metrics
+    return cleaned, None
+
+
+def _load_attack_curve_results(dataset: str) -> tuple[list[dict], list[str]]:
+    """Read saved FGSM/PGD/CW curves; keep raw ASR separate from validity rate."""
+    specs = (
+        ("FGSM", "E2", f"{dataset}_fgsm_asr.json"),
+        ("PGD", "E3", f"{dataset}_pgd_asr.json"),
+        ("CW", "E6", f"{dataset}_cw_asr.json"),
+    )
+    rows = []
+    found = []
+    for attack_name, folder, filename in specs:
+        path = RESULTS_DIR / folder / filename
+        if not path.is_file():
+            continue
+        found.append(attack_name)
         try:
-            with e1_path.open(encoding="utf-8") as result_file:
-                data = json.load(result_file)
-        except (OSError, json.JSONDecodeError) as exc:
-            st.error(f"Could not read the clean-metrics result: {exc}")
-        else:
-            required_scores = ("accuracy", "f1", "recall", "auroc")
-            model_results = {
-                model: metrics
-                for model, metrics in data.items()
-                if isinstance(data, dict)
-                and isinstance(model, str)
-                and isinstance(metrics, dict)
-                and all(
-                    isinstance(metrics.get(name), (int, float))
-                    and not isinstance(metrics.get(name), bool)
-                    and np.isfinite(metrics[name])
-                    and 0 <= metrics[name] <= 1
-                    for name in required_scores
-                )
-            } if isinstance(data, dict) else {}
-
-            if model_results:
-                st.markdown("#### Compare the models")
-                render_results_overview(dataset, model_results)
-                animation_key = f"_results_landscape_seen_{dataset}"
-                render_clean_model_landscape(
-                    model_results,
-                    animate=not st.session_state.get(animation_key, False),
-                )
-                st.session_state[animation_key] = True
-                model_options = sorted(model_results)
-                highest_f1_model = max(
-                    model_options,
-                    key=lambda model: float(model_results[model]["f1"]),
-                )
-                selected_model = st.selectbox(
-                    "Inspect one model's detailed outcome",
-                    options=model_options,
-                    index=model_options.index(highest_f1_model),
-                    key=f"gallery_clean_model_{dataset}",
-                )
-                selected_metrics = model_results[selected_model]
-                if all(
-                    isinstance(selected_metrics.get(name), int)
-                    and not isinstance(selected_metrics.get(name), bool)
-                    and selected_metrics[name] >= 0
-                    for name in ("tn", "fp", "fn", "tp")
+            with path.open(encoding="utf-8") as result_file:
+                payload = json.load(result_file)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for model_name, points in payload.items():
+            if not isinstance(points, list):
+                continue
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    epsilon = float(point["eps"])
+                    asr = float(point["asr"])
+                    n = int(point["n"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not (
+                    np.isfinite(epsilon) and np.isfinite(asr)
+                    and 0 <= asr <= 1 and n >= 0
                 ):
-                    render_clean_diagnostics(
-                        selected_metrics,
-                        key=f"gallery_clean_cohort_{dataset}",
-                    )
-                else:
-                    st.info("This result contains no complete confusion counts for a class-level breakdown.")
-            else:
-                st.warning("This file does not match the expected model-to-clean-metrics structure.")
+                    continue
+                valid = point.get("valid")
+                valid_rate = (
+                    float(valid)
+                    if isinstance(valid, (int, float))
+                    and not isinstance(valid, bool)
+                    and np.isfinite(valid) and 0 <= valid <= 1
+                    else None
+                )
+                rows.append({
+                    "model": str(model_name),
+                    "attack": attack_name,
+                    "epsilon": epsilon,
+                    "raw_asr": asr,
+                    "n": n,
+                    "valid_rate": valid_rate,
+                })
+    return rows, found
 
-            with st.expander("Inspect raw E1 result data"):
-                st.json(data)
-    else:
-        st.info(
-            f"No clean-metric result is available for **{dataset}** yet. "
-            "Train and evaluate a model to create the E1 artifact."
+
+def _build_evidence_checks(result: dict) -> list[dict]:
+    """Create evidence states where validity and prediction transition stay separate."""
+    checks = []
+    baseline_ok = bool(result.get("baseline_valid", True))
+    checks.append({
+        "title": "Starting flow",
+        "state": "pass" if baseline_ok else "warn",
+        "label": "Eligible" if baseline_ok else "Review baseline",
+        "detail": (
+            "The original flow passes the configured feature-bound checks."
+            if baseline_ok else
+            f"The original flow already has {len(result.get('baseline_violations', []))} "
+            "configured bound violation(s); this run cannot support a valid-evasion claim."
+        ),
+    })
+
+    output_ok = bool(result.get("valid", False))
+    checks.append({
+        "title": "Perturbation constraints",
+        "state": "pass" if output_ok else "fail",
+        "label": "All checks passed" if output_ok else "Invalid output",
+        "detail": (
+            "The candidate passed the configured bound, immutable-feature, and epsilon checks."
+            if output_ok else
+            f"{len(result.get('violations', []))} constraint violation(s) were reported."
+        ),
+    })
+
+    evasion = bool(result.get("evasion", False))
+    if not baseline_ok:
+        outcome_state, label, detail = (
+            "warn", "Not eligible",
+            "Do not count the result as evidence of a valid evasion because the starting flow is out of bounds.",
         )
-
-    st.markdown("### Training with supplied augmentations")
-    augmented_result_files = sorted(
-        (RESULTS_DIR / "E9").glob(f"{dataset}_*_augmented_comparison.json")
-    )
-    if augmented_result_files:
-        result_by_model = {}
-        for result_file in augmented_result_files:
-            try:
-                with result_file.open(encoding="utf-8") as file:
-                    result = json.load(file)
-                model = result.get("model")
-                if (
-                    isinstance(model, str)
-                    and _has_comparison_metrics(result.get("baseline_metrics"))
-                    and _has_comparison_metrics(result.get("augmented_metrics"))
-                    and isinstance(result.get("training"), dict)
-                ):
-                    result_by_model[model] = result
-                else:
-                    st.warning(f"Unsupported comparison schema in {result_file.name}.")
-            except (OSError, json.JSONDecodeError) as exc:
-                st.error(f"Could not read {result_file.name}: {exc}")
-
-        if result_by_model:
-            comparison_model = st.selectbox(
-                "Model comparison",
-                options=sorted(result_by_model),
-                key=f"augmented_result_model_{dataset}",
-            )
-            comparison = result_by_model[comparison_model]
-            render_clean_model_comparison(
-                comparison["baseline_metrics"],
-                comparison["augmented_metrics"],
-            )
-            training = comparison["training"]
-            st.caption(
-                f"{training['n_clean_train']:,} clean training rows + "
-                f"{training['n_augmented_train']:,} supplied augmentations. "
-                "This is a clean-test comparison, not an adversarial robustness result."
-            )
-            with st.expander("Inspect comparison metadata"):
-                st.json(comparison)
-        else:
-            st.warning("Comparison files exist, but none contain a supported clean-set result.")
+    elif not output_ok:
+        outcome_state, label, detail = (
+            "fail", "Cannot count as success",
+            "A prediction flip on an invalid candidate is not a successful valid evasion.",
+        )
+    elif evasion:
+        outcome_state, label, detail = (
+            "pass", "Valid prediction flip",
+            "A correctly detected attack flow was classified as benign after a valid perturbation.",
+        )
     else:
-        st.html(
-            """
-            <section class="augmentation-empty-state">
-              <p class="comparison-kicker">NO SAVED COMPARISON YET</p>
-              <h3>Run the supplied-data training workflow to see it here.</h3>
-              <ol>
-                <li>Open <strong>Model Setup</strong> and load or train the baseline for this dataset.</li>
-                <li>Expand <strong>Train a separate model from supplied training augmentations</strong>.</li>
-                <li>Upload an NPZ with <code>X_raw</code>, <code>y</code>, and <code>source_indices</code>, then train.</li>
-              </ol>
-              <p>The comparison uses the same clean held-out test set. It does not generate augmentations or measure adversarial robustness.</p>
-            </section>
+        outcome_state, label, detail = (
+            "neutral", "No evasion observed",
+            "The run completed, but it did not change a correctly detected attack into a benign prediction.",
+        )
+    checks.append({
+        "title": "Research outcome",
+        "state": outcome_state,
+        "label": label,
+        "detail": detail,
+    })
+    return checks
+
+
+def _render_evidence_checks(result: dict) -> None:
+    """Display a compact evidence checklist with visually distinct statuses."""
+    checks = _build_evidence_checks(result)
+    cards = []
+    symbols = {"pass": "✓", "warn": "!", "fail": "×", "neutral": "·"}
+    for item in checks:
+        state = escape(item["state"])
+        cards.append(
+            f"""
+            <article class="evidence-check evidence-{state}">
+              <div class="evidence-check-top">
+                <span class="evidence-symbol" aria-hidden="true">{symbols[item['state']]}</span>
+                <span class="evidence-state">{escape(item['label'])}</span>
+              </div>
+              <h4>{escape(item['title'])}</h4>
+              <p>{escape(item['detail'])}</p>
+            </article>
             """
         )
-
-    st.markdown("### Generate batch results")
-    st.markdown(
-        '<p class="section-intro">Run experiments locally to populate attack-success '
-        'curves and other result artifacts.</p>',
-        unsafe_allow_html=True,
+    st.html(
+        '<section class="evidence-grid" aria-label="Experiment evidence checklist">'
+        + "".join(cards) + "</section>"
     )
-    st.code("python -m nids.experiments --e2 --e3", language="bash")
-    with st.expander("Research questions"):
+    violations = list(result.get("baseline_violations", [])) + list(result.get("violations", []))
+    if violations:
+        with st.expander(f"Inspect {len(violations)} reported constraint issue(s)"):
+            for violation in violations:
+                st.write(f"• {violation}")
+    st.caption(
+        "Scope note: a model prediction change does not by itself prove that a real network "
+        "connection remains behaviorally equivalent. These checks cover the project's configured "
+        "feature constraints, not live packet-level equivalence."
+    )
+
+
+def render_gallery():
+    dataset = st.session_state.get("dataset", "dummy")
+    render_page_header(
+        "Research findings",
+        "Answer the research questions.",
+        "This page separates observed measurements from missing evidence, so each conclusion is traceable to a saved experiment.",
+    )
+    clean_results, clean_error = _load_clean_model_results(dataset)
+    attack_rows, attack_artifacts = _load_attack_curve_results(dataset)
+
+    if clean_error:
+        st.warning(clean_error)
+
+    rq1_tab, rq2_tab, rq3_tab, clean_tab = st.tabs([
+        "RQ1 · Model vulnerability",
+        "RQ2 · Feature susceptibility",
+        "RQ3 · Adversarial training",
+        "Clean baseline",
+    ])
+
+    # RQ1: compare architecture behavior from saved attack-success curves.
+    with rq1_tab:
+        st.markdown("### Which IDS architectures are most vulnerable?")
         st.markdown(
-            "- **RQ1** — Which model architectures are most vulnerable?\n"
-            "- **RQ2** — Which features are most susceptible? Inspect feature changes and gradients.\n"
-            "- **RQ3** — Can adversarial training improve robustness? Compare the supported experiments."
+            "This view ranks only architectures with saved batch attack curves for the selected dataset. "
+            "It reports raw classification-flip rate and candidate validity separately."
         )
+        if attack_rows:
+            all_points = pd.DataFrame(attack_rows)
+            usable = all_points[all_points["n"] > 0].copy()
+            if usable.empty:
+                st.info(
+                    "Attack result files were found, but they report no correctly detected attack "
+                    "flows to evaluate. This is not enough evidence to rank model vulnerability."
+                )
+            else:
+                grouped = usable.groupby("model", as_index=False).agg(
+                    mean_raw_asr=("raw_asr", "mean"),
+                    mean_validity_rate=("valid_rate", "mean"),
+                    evaluated_points=("raw_asr", "count"),
+                    evaluated_flows=("n", "sum"),
+                )
+                grouped = grouped.sort_values("mean_raw_asr", ascending=False)
+                top = grouped.iloc[0]
+                best_model = str(top["model"])
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Highest mean raw ASR", best_model.upper())
+                c2.metric("Mean raw ASR", f"{top['mean_raw_asr']:.1%}")
+                validity_values = grouped["mean_validity_rate"].dropna()
+                c3.metric(
+                    "Mean candidate validity",
+                    f"{validity_values.mean():.1%}" if len(validity_values) else "Not recorded",
+                )
+                chart = grouped.set_index("model")[["mean_raw_asr"]].rename(
+                    columns={"mean_raw_asr": "Mean raw ASR"}
+                ) * 100
+                st.bar_chart(chart, horizontal=True)
+                display = grouped.copy()
+                display["mean_raw_asr"] = display["mean_raw_asr"].map(lambda value: f"{value:.1%}")
+                display["mean_validity_rate"] = display["mean_validity_rate"].map(
+                    lambda value: f"{value:.1%}" if pd.notna(value) else "Not recorded"
+                )
+                display = display.rename(columns={
+                    "model": "Model",
+                    "mean_raw_asr": "Mean raw ASR",
+                    "mean_validity_rate": "Mean candidate validity",
+                    "evaluated_points": "Model × attack × epsilon points",
+                    "evaluated_flows": "Flow evaluations (sum across points)",
+                })
+                st.dataframe(display, use_container_width=True, hide_index=True)
+                st.markdown("#### Saved experiment details")
+                detail = all_points.copy()
+                detail["raw_asr"] = detail["raw_asr"].map(lambda value: f"{value:.1%}")
+                detail["valid_rate"] = detail["valid_rate"].map(
+                    lambda value: f"{value:.1%}" if value is not None and pd.notna(value) else "Not recorded"
+                )
+                detail = detail.rename(columns={
+                    "model": "Model",
+                    "attack": "Attack",
+                    "epsilon": "Epsilon",
+                    "raw_asr": "Raw ASR",
+                    "n": "Eligible starting flows (N)",
+                    "valid_rate": "Candidate validity rate",
+                })
+                st.dataframe(detail, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Raw ASR here means any flip from detected attack to benign among correctly detected attack flows. "
+                    "Candidate validity is reported separately; the stored schema does not identify which successful "
+                    "flips were also valid, so do not interpret raw ASR as valid-evasion rate."
+                )
+        else:
+            st.info(
+                f"No batch FGSM, PGD, or CW ASR files were found for {dataset}. "
+                "The gallery will not invent a vulnerability ranking from clean F1 scores."
+            )
+            st.code(
+                f"python -m nids.experiments --dataset {dataset} "
+                "--models lr rf xgb mlp cnn1d ensemble --e2 --e3 --e6",
+                language="bash",
+            )
+            st.caption(
+                "These current batch experiments cover FGSM, PGD, and CW. "
+                "DeepFool, JSMA, and NES still need equivalent batch-result artifacts for a complete six-method comparison."
+            )
+
+    # RQ2: surface the actual latest per-flow result, but explicitly mark it as a case study.
+    with rq2_tab:
+        st.markdown("### Which features are most susceptible to change?")
+        latest = st.session_state.get("result")
+        if (
+            isinstance(latest, dict)
+            and latest.get("dataset") == dataset
+            and isinstance(latest.get("diff"), list)
+            and latest.get("diff")
+        ):
+            st.caption(
+                f"One-flow case study · model {str(latest.get('model', 'unknown')).upper()} · "
+                f"{latest.get('method', 'unknown')} · epsilon {latest.get('eps', '—')} · "
+                f"held-out row #{latest.get('flow_index', '—')}."
+            )
+            features = pd.DataFrame(latest["diff"])
+            features["signed_change"] = features["after"] - features["before"]
+            features["absolute_change"] = np.abs(features["signed_change"])
+            features = features.sort_values("absolute_change", ascending=False)
+            chart = features.set_index("feature")[["absolute_change"]].rename(
+                columns={"absolute_change": "Absolute feature change"}
+            )
+            st.bar_chart(chart, horizontal=True)
+            display = features[["feature", "before", "after", "signed_change", "absolute_change"]].rename(
+                columns={
+                    "feature": "Feature",
+                    "before": "Before",
+                    "after": "After",
+                    "signed_change": "Signed change (after − before)",
+                    "absolute_change": "Magnitude",
+                }
+            )
+            st.dataframe(display, use_container_width=True, hide_index=True)
+            st.markdown(
+                "**What this tells you:** these are the features changed most in this particular run. "
+                "It does **not** establish dataset-wide feature susceptibility or causal importance."
+            )
+            if not latest.get("valid", False):
+                st.warning("This run failed the configured validity checks. Do not treat its changed features as valid-evasion evidence.")
+        else:
+            st.info(
+                "No current-session feature-difference result is available for this dataset. "
+                "Run an interactive probe in Attack Console, then return here. For a research-level RQ2 "
+                "answer, aggregate changes over many correctly detected held-out attack flows and across models."
+            )
+        st.markdown("#### Evidence needed for a strong RQ2 conclusion")
+        st.markdown(
+            "Aggregate per-feature change frequency and magnitude across repeated flows, report how often each "
+            "feature is actually mutable, and separate valid from invalid candidates. A one-flow ranking is descriptive only."
+        )
+
+    # RQ3: clean augmented comparison is useful but not a robustness measurement.
+    with rq3_tab:
+        st.markdown("### Does adversarial training improve robustness without sacrificing clean performance?")
+        st.markdown(
+            "To answer this, the baseline and defended model must be evaluated on the same held-out flows under the same attacks and budgets."
+        )
+        augmented_files = sorted(
+            (RESULTS_DIR / "E9").glob(f"{dataset}_*_augmented_comparison.json")
+        )
+        comparisons = {}
+        for result_file in augmented_files:
+            try:
+                with result_file.open(encoding="utf-8") as source:
+                    payload = json.load(source)
+                model_name = payload.get("model")
+                if (
+                    isinstance(model_name, str)
+                    and _has_comparison_metrics(payload.get("baseline_metrics"))
+                    and _has_comparison_metrics(payload.get("augmented_metrics"))
+                    and isinstance(payload.get("training"), dict)
+                ):
+                    comparisons[model_name] = payload
+            except (OSError, json.JSONDecodeError):
+                continue
+
+        if comparisons:
+            selected = st.selectbox(
+                "Clean-performance comparison",
+                options=sorted(comparisons),
+                key=f"rq3_augmented_model_{dataset}",
+            )
+            record = comparisons[selected]
+            base = record["baseline_metrics"]
+            defended = record["augmented_metrics"]
+            ui_delta = (float(defended["f1"]) - float(base["f1"])) * 100
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Clean F1 change", f"{ui_delta:+.2f} pp")
+            c2.metric("Baseline recall", f"{float(base['recall']):.1%}")
+            c3.metric("Augmented-model recall", f"{float(defended['recall']):.1%}")
+            render_clean_model_comparison(base, defended)
+            training = record["training"]
+            st.caption(
+                f"Training set: {training.get('n_clean_train', '—')} clean rows + "
+                f"{training.get('n_augmented_train', '—')} supplied augmentations. "
+                "This is a clean-test comparison only."
+            )
+        else:
+            st.info(
+                "No saved supplied-augmentation clean comparison exists for this dataset yet. "
+                "Train a separate model from reviewed, labeled augmentations in Model Setup."
+            )
+        st.warning(
+            "RQ3 is only partially answered by clean-set metrics. The current saved comparison does not show "
+            "whether the augmented model withstands FGSM/PGD/CW or the other attacks. A matched baseline-vs-defended "
+            "adversarial evaluation is still required before claiming a robustness improvement."
+        )
+
+    # Clean baseline: show what the model detects correctly and misses.
+    with clean_tab:
+        st.markdown("### How capable is the detector on untouched flows?")
+        st.caption(
+            "Clean-set scores establish the baseline, but they do not measure adversarial robustness."
+        )
+        if clean_results:
+            render_results_overview(dataset, clean_results)
+            render_clean_model_landscape(clean_results, animate=False)
+            selected_model = st.selectbox(
+                "Inspect clean-set errors",
+                options=sorted(clean_results),
+                index=sorted(clean_results, key=lambda model: clean_results[model]["f1"], reverse=True).index(
+                    max(clean_results, key=lambda model: clean_results[model]["f1"])
+                ),
+                key=f"gallery_clean_model_{dataset}",
+            )
+            metrics = clean_results[selected_model]
+            if all(
+                isinstance(metrics.get(name), int)
+                and not isinstance(metrics.get(name), bool)
+                and metrics[name] >= 0
+                for name in ("tn", "fp", "fn", "tp")
+            ):
+                render_clean_diagnostics(metrics, key=f"gallery_clean_cohort_{dataset}")
+            else:
+                st.info("This saved clean result does not include all four confusion counts.")
+            with st.expander("Inspect raw clean metrics"):
+                st.json(clean_results)
+        else:
+            st.info(f"No valid E1 clean-metrics artifact is available for {dataset} yet.")
+            st.code(
+                f"python -m nids.experiments --dataset {dataset} "
+                "--models lr rf xgb mlp cnn1d ensemble --e1",
+                language="bash",
+            )
 
 
 # ---------------------------------------------------------------------------
