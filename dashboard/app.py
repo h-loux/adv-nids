@@ -618,10 +618,13 @@ def render_augmented_training(dataset: str, model_name: str, baseline) -> None:
                         "The loaded baseline preprocessing does not match the current "
                         "clean training split. Refresh the baseline before comparing."
                     )
-                baseline_seed = int(getattr(baseline, "seed", 0))
+                # Non-neural baselines store epochs/batch_size as None in their
+                # artifacts. Treat those optional metadata fields as defaults rather
+                # than passing None to int(), which aborts augmented-data training.
+                baseline_seed = int(getattr(baseline, "seed", None) or 0)
                 baseline_epochs = getattr(baseline, "epochs", None)
                 training_epochs = int(baseline_epochs or 50)
-                training_batch_size = int(getattr(baseline, "batch_size", 256))
+                training_batch_size = int(getattr(baseline, "batch_size", None) or 256)
                 baseline_params = getattr(baseline, "model_params", {}) or None
 
                 with st.status("Training a separate augmented-data model...", expanded=True) as status:
