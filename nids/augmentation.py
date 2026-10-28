@@ -29,12 +29,14 @@ def generate_adversarial_training_augmentations(
     """Generate validated, label-preserving augmentations from training rows.
 
     Source rows are restricted to malicious training examples the baseline
-    currently classifies as malicious. FGSM/PGD attempts to move them toward
-    the benign decision region. Changed samples that pass configured bounds,
-    immutable-feature, integer-feature, one-hot, and scaled-epsilon checks are
-    retained whether or not the model's prediction flips. Their true label
-    stays ATTACK, so the separately trained model is taught not to treat these
-    perturbed malicious flows as benign.
+    currently classifies as malicious. Their order is seeded and shuffled, and
+    the scan stops once max_samples eligible source rows have been found (or
+    all malicious training rows have been checked). This bounds unnecessary
+    full-dataset prediction work on large datasets. FGSM/PGD attempts to move
+    selected rows toward the benign decision region. Changed samples that pass
+    configured bounds, immutable-feature, integer-feature, one-hot, and
+    scaled-epsilon checks are retained whether or not the model's prediction
+    flips. Their true label stays ATTACK.
 
     This function never reads the held-out test split.
     """
@@ -65,29 +67,40 @@ def generate_adversarial_training_augmentations(
     if mutable_mask.shape != (X.shape[1],):
         raise ValueError("Model mutable-feature mask does not match training features.")
 
-    # Scan only attack rows in bounded chunks. CICIDS2017/UNSW-NB15 can be
-    # large; predicting the entire training matrix at once wastes RAM during
-    # the overnight batch that repeats this step for many models.
+    # Randomize the malicious-row order and stop as soon as enough eligible
+    # sources are found. The previous implementation predicted every malicious
+    # training row before applying max_samples, which could dominate runtime on
+    # CICIDS2017 even when the caller requested only a handful of augmentations.
+    rng = np.random.default_rng(seed)
     attack_indices = np.flatnonzero(y == ATTACK)
+    rng.shuffle(attack_indices)
     eligible_parts = []
-    prediction_batch_size = 4096
+    eligible_count = 0
+    attack_rows_scanned = 0
+    prediction_batch_size = 1024
     for start in range(0, len(attack_indices), prediction_batch_size):
         row_indices = attack_indices[start:start + prediction_batch_size]
+        attack_rows_scanned += len(row_indices)
         row_predictions = np.argmax(model.predict_proba(X[row_indices]), axis=1)
         correctly_detected = row_indices[row_predictions == ATTACK]
         if len(correctly_detected):
             eligible_parts.append(correctly_detected)
+            eligible_count += len(correctly_detected)
+        if eligible_count >= int(max_samples):
+            break
+
     eligible = (
         np.concatenate(eligible_parts).astype(np.int64, copy=False)
         if eligible_parts else np.empty(0, dtype=np.int64)
     )
     if len(eligible) == 0:
         raise ValueError(
-            "No correctly detected malicious rows exist in this training split for "
-            "this baseline. Check the clean baseline and dataset labels first."
+            "No correctly detected malicious rows were found in the scanned training rows "
+            "for this baseline. Try increasing max_samples or inspect the clean baseline."
         )
 
-    rng = np.random.default_rng(seed)
+    # Keep stable source-index order after selecting a seeded random candidate pool.
+    eligible = np.sort(eligible)
     if len(eligible) > int(max_samples):
         eligible = np.sort(rng.choice(eligible, size=int(max_samples), replace=False))
 
@@ -158,6 +171,10 @@ def generate_adversarial_training_augmentations(
         "seed": int(seed),
         "pgd_steps": int(pgd_steps) if method == "PGD" else None,
         "eligible_source_rows": int(len(eligible)),
+        "eligible_candidates_found_before_cap": int(eligible_count),
+        "attack_training_rows_total": int(len(attack_indices)),
+        "attack_training_rows_scanned": int(attack_rows_scanned),
+        "candidate_scan_complete": bool(attack_rows_scanned >= len(attack_indices)),
         "generated_valid_rows": int(len(kept_X)),
         "valid_candidates_predicted_benign": int(evasion_successes),
         "invalid_rejected": int(invalid_rejected),
