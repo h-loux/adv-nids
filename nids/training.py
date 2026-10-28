@@ -14,6 +14,21 @@ from nids.eval.metrics import compute_metrics
 from nids.models import make_model
 
 
+def _predict_proba_in_batches(victim, X_raw: np.ndarray, batch_size: int = 8192) -> np.ndarray:
+    """Predict in bounded chunks to avoid duplicating huge test matrices in RAM."""
+    X_raw = np.asarray(X_raw)
+    if X_raw.ndim != 2:
+        raise ValueError("Prediction features must be a 2D array")
+    if batch_size < 1:
+        raise ValueError("Prediction batch size must be positive")
+    if len(X_raw) == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    probability_parts = []
+    for start in range(0, len(X_raw), batch_size):
+        probability_parts.append(victim.predict_proba(X_raw[start:start + batch_size]))
+    return np.vstack(probability_parts)
+
+
 def fit_model(
     model_name: str,
     train_arrays: dict[str, np.ndarray],
@@ -170,7 +185,7 @@ def train_and_save_model(
     if not np.isfinite(X_test_raw).all():
         raise ValueError("Test features contain NaN or infinite values")
 
-    probabilities = victim.predict_proba(X_test_raw)
+    probabilities = _predict_proba_in_batches(victim, X_test_raw)
     predictions = np.argmax(probabilities, axis=1)
     metrics = compute_metrics(y_test, predictions, probabilities)
     victim.metrics = metrics
@@ -238,7 +253,7 @@ def train_augmented_and_save_model(
     if not np.isfinite(X_test_raw).all():
         raise ValueError("Test features contain NaN or infinite values")
 
-    probabilities = victim.predict_proba(X_test_raw)
+    probabilities = _predict_proba_in_batches(victim, X_test_raw)
     predictions = np.argmax(probabilities, axis=1)
     metrics = compute_metrics(y_test, predictions, probabilities)
     victim.metrics = metrics
