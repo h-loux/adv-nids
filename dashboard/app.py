@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import sys
+from html import escape
 import zipfile
 from pathlib import Path
 
@@ -886,25 +887,40 @@ def render_attack():
     mutable_mask = vm.mutable_mask
 
     st.markdown("**Step 1 — Pick a flow**: Select a network flow to inspect.")
-    label_filter = st.select_slider(
+    # Use a compact dropdown for the cohort rather than a toggle-like slider.
+    label_filter = st.selectbox(
         "Traffic cohort",
-        options=("All flows", "Attack flows only"),
-        value="Attack flows only",
-        help="Focus on malicious flows for the robustness probe, or inspect the full held-out set.",
+        options=("Attack flows only", "All flows"),
+        index=0,
+        key=f"traffic_cohort_{dataset}",
+        help="Choose the type of held-out traffic to inspect.",
     )
-    idxs = np.arange(len(y))
     if label_filter == "Attack flows only":
-        idxs = idxs[y == ATTACK]
+        idxs = np.flatnonzero(y == ATTACK)
+    else:
+        idxs = None
 
-    if len(idxs) == 0:
+    available_count = len(y) if idxs is None else len(idxs)
+    if available_count == 0:
         st.warning("No flows match this filter in the selected test split.")
         return
 
-    idx = st.selectbox(
-        "Select flow",
-        options=list(idxs),
-        format_func=lambda i: f"#{i:04d} · {LABEL_NAMES[y[i]]} · {families[i]}",
-        key="flow_idx",
+    # Avoid materializing thousands of selectbox options on large datasets.
+    flow_key = f"flow_offset_{dataset}_{'attack' if idxs is not None else 'all'}"
+    safe_default = min(int(st.session_state.get(flow_key, 0)), available_count - 1)
+    flow_offset = st.number_input(
+        "Flow index in this cohort",
+        min_value=0,
+        max_value=available_count - 1,
+        value=safe_default,
+        step=1,
+        key=flow_key,
+        help=f"Choose 0 to {available_count - 1:,}. This avoids rendering every test row in a dropdown.",
+    )
+    idx = int(flow_offset) if idxs is None else int(idxs[int(flow_offset)])
+    st.caption(
+        f"Selected held-out row #{idx:,} · true class: {LABEL_NAMES[int(y[idx])]} · "
+        f"family: {families[idx]}"
     )
     x_clean = X[idx:idx+1]
     true_label = int(y[idx])
@@ -937,11 +953,12 @@ def render_attack():
     st.markdown("**Step 3 — Configure attack**: Select an attack and perturbation budget.")
     col_a, col_b = st.columns(2)
     with col_a:
-        method = st.select_slider(
+        method = st.radio(
             "Attack method",
             options=("FGSM", "PGD", "CW", "DeepFool", "JSMA", "NES"),
-            value="FGSM",
-            help="FGSM: single-step · PGD: iterative projection · CW: optimization · DeepFool: boundary search · JSMA: saliency · NES: black-box queries.",
+            horizontal=True,
+            key="attack_method",
+            help="FGSM: one step · PGD: projected iterations · CW: optimization · DeepFool: boundary search · JSMA: saliency · NES: black-box queries.",
         )
         attack_fn = {"FGSM": fgsm, "PGD": pgd, "CW": cw, "DeepFool": deepfool,
                      "JSMA": jsma, "NES": nes_attack}[method]
