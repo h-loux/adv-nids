@@ -172,10 +172,10 @@ def _train_pair(
     else:
         chosen_epochs = args.epochs if args.epochs is not None else 20
     chosen_batch_size = int(
-        baseline_artifact.get("batch_size") or args.batch_size
+        args.batch_size
+        if args.batch_size is not None
+        else (baseline_artifact.get("batch_size") or 256)
     )
-    if args.batch_size is not None:
-        chosen_batch_size = args.batch_size
     model_params = baseline_artifact.get("model_params") or None
     baseline_seed = int(baseline_artifact.get("seed") or args.seed)
 
@@ -302,7 +302,8 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--epochs", type=int, default=None,
                         help="Epochs for MLP/CNN1D; default is existing baseline epochs or 20.")
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override neural-model batch size; defaults to the baseline setting or 256.")
     parser.add_argument("--retrain-baselines", action="store_true",
                         help="Retrain and overwrite clean baseline artifacts before augmentation.")
     parser.add_argument("--force", action="store_true",
@@ -311,8 +312,12 @@ def main(argv=None) -> int:
 
     if not np.isfinite(args.eps) or args.eps <= 0:
         parser.error("--eps must be finite and positive")
-    if args.max_samples < 1 or args.pgd_steps < 1 or args.batch_size < 1:
-        parser.error("--max-samples, --pgd-steps, and --batch-size must be positive")
+    if (
+        args.max_samples < 1
+        or args.pgd_steps < 1
+        or (args.batch_size is not None and args.batch_size < 1)
+    ):
+        parser.error("--max-samples and --pgd-steps must be positive; --batch-size must be positive when supplied")
     if args.epochs is not None and args.epochs < 1:
         parser.error("--epochs must be positive")
 
